@@ -142,7 +142,7 @@ dialog.sheetdlg::backdrop{background:rgba(10,12,18,.55)}
 .wk-day.sel .wk-dot{background:#fff}
 
 /* ---------- agenda list (phones) ---------- */
-.ag{padding:4px 14px 96px}
+.ag{padding:4px 14px 160px}
 .ag-group h4{margin:14px 0 4px;font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 .ag-row{display:grid;grid-template-columns:22px 4.6rem minmax(0,1fr) auto;align-items:start;gap:4px 10px;padding:11px 10px;margin:0 -10px;border-radius:10px;cursor:pointer}
 .ag-row:hover{background:var(--navy-soft)}
@@ -163,7 +163,7 @@ dialog.sheetdlg::backdrop{background:rgba(10,12,18,.55)}
 .ag-empty{padding:40px 20px;text-align:center;color:var(--muted)}
 .ag-empty .btn{margin-top:6px}
 .daypanel{position:relative}
-.fab{position:absolute;right:18px;bottom:calc(18px + env(safe-area-inset-bottom,0px));width:58px;height:58px;border-radius:50%;border:0;background:var(--crimson);color:#fff;font-size:2rem;line-height:1;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:2}
+.fab{position:absolute;right:18px;bottom:calc(84px + env(safe-area-inset-bottom,0px));width:58px;height:58px;border-radius:50%;border:0;background:var(--crimson);color:#fff;font-size:2rem;line-height:1;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:2}
 .fab:active{transform:scale(.96)}
 
 /* ---------- add / edit sheet ---------- */
