@@ -41,7 +41,9 @@
   const parts = k => k.split("-").map(Number);
   const addDays = (k, n) => { const [y,m,d] = parts(k); const t = new Date(y, m-1, d+n); return key(t.getFullYear(), t.getMonth(), t.getDate()); };
   const dayNum = k => { const [y,m,d] = parts(k); return Math.round(Date.UTC(y, m-1, d) / 864e5); };
-  const shortDate = k => { const [y,m,d] = parts(k); return `${MON[m-1].slice(0,3)} ${d}${y !== new Date().getFullYear() ? `, ${y}` : ""}`; };
+  const shortDate = k => { const [y,m,d] = parts(k);
+    if (window.isBS && isBS()) { const b = toBS(y, m-1, d), nb = toBS(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()); return `${BS_MONTHS[b.m]} ${b.d}${nb && b.y !== nb.y ? `, ${b.y}` : ""}`; }
+    return `${MON[m-1].slice(0,3)} ${d}${y !== new Date().getFullYear() ? `, ${y}` : ""}`; };
   const isRep = t => !!t.repeat && t.repeat !== "none";
   const overnight = t => { const s = toMin(t.start_time), e = toMin(t.end_time); return s != null && e != null && e < s; };
   const bell = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
@@ -374,8 +376,8 @@
   }
   // move the day view (and the calendar behind it) to another date
   function gotoDay(k){
-    const [y,m] = parts(k);
-    state.sel = k; state.y = y; state.m = m - 1;
+    const ym = ymOf(k);
+    state.sel = k; state.y = ym.y; state.m = ym.m;
     openDay = k;
     render();
     renderDay(true);
@@ -393,7 +395,7 @@
       const hol = (byDate[k] || []).some(h => h.t === "public");
       const cls = ["wk-day", k === openDay ? "sel" : "", k === tk ? "today" : "", (i === 0 || i === 6 || hol) ? "off" : ""].filter(Boolean).join(" ");
       days += `<button class="${cls}" data-day="${k}" type="button" aria-label="${dt.toDateString()}${open ? `, ${open} open tasks` : ""}" ${k === openDay ? 'aria-current="date"' : ""}>
-        <small>${DOW[i][0]}</small><b>${dt.getDate()}</b><i>${b ? np(b.d) : ""}</i><span class="wk-dot${open ? "" : " none"}"></span></button>`;
+        <small>${DOW[i][0]}</small>${isBS() && b ? `<b>${b.d}</b><i>${dt.getDate()}</i>` : `<b>${dt.getDate()}</b><i>${b ? np(b.d) : ""}</i>`}<span class="wk-dot${open ? "" : " none"}"></span></button>`;
     }
     const sk = key(start.getFullYear(), start.getMonth(), start.getDate());
     return `<div class="wk"><button class="wk-nav" data-day="${addDays(sk, -7)}" type="button" aria-label="Previous week">‹</button>
@@ -470,8 +472,8 @@
     const hols = (byDate[openDay] || []).filter(h => h.t !== "obs").map(h => `<span class="htag ${h.t}">${h.n.split(" · ")[0]}</span>`).join("");
     const head = `<div class="dp-head">
         <button class="iconbtn dp-back" id="dpClose" type="button" aria-label="Back to calendar">${listMode ? "‹" : "×"}</button>
-        <div class="dp-title"><div class="dp-date">${dt.toLocaleDateString("en-GB",{weekday:"short"})}, ${MON[m-1]} ${d}${openDay===todayKey() ? ` <span class="dp-today">Today</span>` : ""}</div>
-          <div class="dp-bs">${b ? `${BS_MONTHS_NP[b.m]} ${np(b.d)} · ${WEEKDAY_NP[dt.getDay()]}` : ""}</div>${hols ? `<div class="dp-hols">${hols}</div>` : ""}</div>
+        <div class="dp-title"><div class="dp-date">${dt.toLocaleDateString("en-GB",{weekday:"short"})}, ${isBS() && b ? `${BS_MONTHS[b.m]} ${b.d}` : `${MON[m-1]} ${d}`}${openDay===todayKey() ? ` <span class="dp-today">Today</span>` : ""}</div>
+          <div class="dp-bs">${b ? (isBS() ? `${MON[m-1]} ${d}, ${y} · ${WEEKDAY_NP[dt.getDay()]}` : `${BS_MONTHS_NP[b.m]} ${np(b.d)} · ${WEEKDAY_NP[dt.getDay()]}`) : ""}</div>${hols ? `<div class="dp-hols">${hols}</div>` : ""}</div>
         ${user && !listMode ? `<button class="btn primary" id="dpAdd" type="button">+ Add</button>` : ""}
       </div>${weekHTML()}`;
 
@@ -719,12 +721,27 @@
   }
 
   // ---------- account ----------
+  // Main calendar (AD or BS): saved on this device, changes the calendar straight away
+  const calPickHTML = () => `<div class="acct-cal"><span>Main calendar</span>
+      <div class="cal-seg" role="group" aria-label="Main calendar">
+        <button type="button" data-cal="ad" aria-pressed="${!isBS()}">AD · English</button>
+        <button type="button" data-cal="bs" aria-pressed="${isBS()}">BS · नेपाली</button></div></div>`;
+  function wireCalPick(dlg){
+    dlg.querySelectorAll("[data-cal]").forEach(b => b.onclick = () => {
+      const bs = b.dataset.cal === "bs";
+      setCalMode(bs);
+      dlg.querySelectorAll("[data-cal]").forEach(x => x.setAttribute("aria-pressed", String((x.dataset.cal === "bs") === bs)));
+      if (openDay) renderDay(false);
+      toast(bs ? "Calendar now in BS (Nepali months)" : "Calendar now in AD (English months)");
+    });
+  }
   function openAuthDlg(){
     const dlg = $("authDlg");
     if (user) {
       const rb = settings.default_remind_before;
       dlg.innerHTML = `<form method="dialog" class="dlg-in" id="acctForm">
         <h2>Account</h2><p class="dlg-sub">Signed in as ${esc(user.email)}</p>
+        ${calPickHTML()}
         <label class="fld">Default reminder for new tasks<select id="sDefault">${REMIND_CHOICES.filter(c => c[0] !== "custom").map(([v,l]) => `<option value="${v}" ${v===rb?"selected":""}>${l}</option>`).join("")}${REMIND_CHOICES.some(c=>c[0]===rb)?"":`<option value="${rb}" selected>${rb} min before</option>`}</select></label>
         <div class="acct-snooze">
           <label class="toggle"><input type="checkbox" id="sSnooze" ${settings.snooze_enabled ? "checked" : ""}><span>Snooze button on alarms</span></label>
@@ -739,6 +756,7 @@
         <div class="dlg-foot"><button type="button" class="btn danger" id="aOut">Sign out</button><span class="sp"></span>
           <button type="button" class="btn ghost" id="aClose">Close</button><button type="submit" class="btn primary">Save</button></div></form>`;
       $("aClose").onclick = () => dlg.close();
+      wireCalPick(dlg);
       $("aOut").onclick = async () => { await sb.auth.signOut(); dlg.close(); toast("Signed out"); };
       $("sSnooze").onchange = () => { $("sSnoozeWrap").hidden = !$("sSnooze").checked; };
       if (native) {
@@ -764,10 +782,12 @@
           <label class="fld">Email<input type="email" id="aEmail" autocomplete="email" required></label>
           <label class="fld">Password<input type="password" id="aPass" autocomplete="${mode==="in"?"current-password":"new-password"}" minlength="8" required></label>
           <p class="err" id="aErr"></p>
+          ${calPickHTML()}
           <div class="dlg-foot"><button type="button" class="linkbtn" id="aSwitch">${mode==="in" ? "Create an account" : "I already have an account"}</button><span class="sp"></span>
             <button type="button" class="btn ghost" id="aClose">Cancel</button><button type="submit" class="btn primary" id="aGo">${mode==="in"?"Sign in":"Create account"}</button></div></form>`;
         $("aClose").onclick = () => dlg.close();
         $("aSwitch").onclick = () => { mode = mode === "in" ? "up" : "in"; draw(); };
+        wireCalPick(dlg);
         $("authForm").onsubmit = async e => {
           e.preventDefault();
           const email = $("aEmail").value.trim(), password = $("aPass").value;
@@ -804,8 +824,8 @@
     // used by the Android app when a notification is tapped
     openDate(k){
       if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
-      const [y,m] = parts(k);
-      state.sel = k; state.y = y; state.m = m - 1;
+      const ym = ymOf(k);
+      state.sel = k; state.y = ym.y; state.m = ym.m;
       if (state.view !== "month") setView("month"); else render();
       showDay(k);
     },

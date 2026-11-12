@@ -1059,8 +1059,41 @@ const TODAY = key(now.getFullYear(), now.getMonth(), now.getDate());
 const Y0 = 2020, Y1 = 2030;
 const inRange = now.getFullYear()>=Y0 && now.getFullYear()<=Y1;
 
-let state = {y: inRange?now.getFullYear():Y0, m: inRange?now.getMonth():0, sel: inRange?TODAY:Y0+"-01-01", view:"month"};
-try{ const s=JSON.parse(localStorage.getItem("patro-view")); if(s && s.y>=Y0 && s.y<=Y1 && !inRange) state={...state,y:s.y,m:s.m}; }catch(e){}
+// Calendar mode: AD (default) or BS as the main calendar. Dates are always stored as AD keys;
+// only what the month and year pages are built around changes.
+let BSMODE = false;
+try{ BSMODE = localStorage.getItem("patro-cal")==="bs"; }catch(e){}
+const BY0 = toBS(Y0,0,1).y, BY1 = toBS(Y1,11,31).y;           // BS years that overlap 2020–2030
+const yLo = ()=>BSMODE?BY0:Y0, yHi = ()=>BSMODE?BY1:Y1;
+const parseK = k => k.split("-").map(Number);
+const kOfUTC = t => { const dt=new Date(t); return key(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate()); };
+// {y,m} of the month page that holds day k in the current mode
+function ymOf(k){ const [y,m,d]=parseK(k); if(!BSMODE) return {y,m:m-1}; const b=toBS(y,m-1,d); return {y:b.y,m:b.m}; }
+// AD keys of every day in month m of year y (BS month in BS mode)
+function monthKeys(y,m){
+  if(!BSMODE) return Array.from({length:new Date(y,m+1,0).getDate()},(_,i)=>key(y,m,i+1));
+  const s=toAD(y,m,1).getTime(); return Array.from({length:bsMonthLen(y,m)},(_,i)=>kOfUTC(s+i*864e5));
+}
+// everything about one day: AD parts, BS parts, weekday
+function dayInfo(k){ const [y,m,d]=parseK(k); return {y,m:m-1,d,b:toBS(y,m-1,d),w:new Date(y,m-1,d).getDay()}; }
+// "Nov 12" in AD mode, "Kartik 26" in BS mode
+function shortDay(k){ const i=dayInfo(k); return BSMODE ? `${BS_MONTHS[i.b.m]} ${i.b.d}` : `${MON[i.m]} ${i.d}`; }
+
+const startYM = ymOf(inRange?TODAY:Y0+"-01-01");
+let state = {y: startYM.y, m: startYM.m, sel: inRange?TODAY:Y0+"-01-01", view:"month"};
+try{ const s=JSON.parse(localStorage.getItem("patro-view")); if(s && !!s.bs===BSMODE && s.y>=yLo() && s.y<=yHi() && !inRange) state={...state,y:s.y,m:s.m}; }catch(e){}
+
+function setCalMode(bs){
+  if(bs===BSMODE) return;
+  BSMODE = bs;
+  try{ localStorage.setItem("patro-cal", bs?"bs":"ad"); }catch(e){}
+  fillYearSel();
+  const ym = ymOf(state.sel); state.y = ym.y; state.m = ym.m;
+  render();
+}
+window.setCalMode = setCalMode;
+window.isBS = ()=>BSMODE;
+window.shortDay = shortDay;
 
 $("dow").innerHTML = DOW.map(([e,n])=>`<div><span>${e}</span><span class="n">${n}</span></div>`).join("");
 
@@ -1079,10 +1112,10 @@ function setView(v){
 
 function render(){
   const {y} = state;
-  try{ localStorage.setItem("patro-view", JSON.stringify({y,m:state.m})); }catch(e){}
+  try{ localStorage.setItem("patro-view", JSON.stringify({y,m:state.m,bs:BSMODE})); }catch(e){}
   $("yearSel").value = y;
-  $("yPrev").disabled = y===Y0;
-  $("yNext").disabled = y===Y1;
+  $("yPrev").disabled = y===yLo();
+  $("yNext").disabled = y===yHi();
   if(state.view==="month") renderMonth();
   if(state.view==="year") renderYear();
   renderDetail();
@@ -1092,52 +1125,62 @@ function render(){
 // ---------- month view ----------
 function renderMonth(){
   const {y,m} = state;
-  $("prev").disabled = (y===Y0 && m===0);
-  $("nextM").disabled = (y===Y1 && m===11);
+  $("prev").disabled = (y===yLo() && m===0);
+  $("nextM").disabled = (y===yHi() && m===11);
+  const NAMES = BSMODE ? BS_MONTHS : MONTHS;
 
-  $("chips").innerHTML = MON.map((mn,i)=>{
-    const a = toBS(y,i,1), b = toBS(y,i,new Date(y,i+1,0).getDate());
-    return `<button data-m="${i}" ${i===m?'aria-current="true"':''}><span>${mn}</span><span class="bsm">${BS_MONTHS_NP[a.m]}–${BS_MONTHS_NP[b.m]}</span></button>`;
+  // month chips: the other calendar's months that each one spans
+  $("chips").innerHTML = NAMES.map((mn,i)=>{
+    const ks = monthKeys(y,i), a = dayInfo(ks[0]), b = dayInfo(ks[ks.length-1]);
+    const sub = BSMODE ? `${MON[a.m]}–${MON[b.m]}` : `${BS_MONTHS_NP[a.b.m]}–${BS_MONTHS_NP[b.b.m]}`;
+    return `<button data-m="${i}" ${i===m?'aria-current="true"':''}><span>${BSMODE?mn:mn.slice(0,3)}</span><span class="bsm">${sub}</span></button>`;
   }).join("");
 
-  const days = new Date(y,m+1,0).getDate();
-  const b1 = toBS(y,m,1), b2 = toBS(y,m,days);
-  $("mTitle").innerHTML = `${MONTHS[m]}<span>${y}</span>`;
-  $("mBs").innerHTML = b1.y===b2.y
-    ? `<span class="bs-np">${BS_MONTHS_NP[b1.m]} – ${BS_MONTHS_NP[b2.m]} ${np(b1.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} – ${BS_MONTHS[b2.m]} ${b1.y} BS</span>`
-    : `<span class="bs-np">${BS_MONTHS_NP[b1.m]} ${np(b1.y)} – ${BS_MONTHS_NP[b2.m]} ${np(b2.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} ${b1.y} – ${BS_MONTHS[b2.m]} ${b2.y} BS</span>`;
+  const keys = monthKeys(y,m), f = dayInfo(keys[0]), l = dayInfo(keys[keys.length-1]);
+  $("mTitle").innerHTML = `${NAMES[m]}<span>${y}</span>`;
+  if(BSMODE){
+    $("mBs").innerHTML = `<span class="bs-np">${BS_MONTHS_NP[m]} ${np(y)}</span><span class="bs-sep"> · </span><span class="bs-en">${f.y===l.y ? `${MON[f.m]} – ${MON[l.m]} ${f.y}` : `${MON[f.m]} ${f.y} – ${MON[l.m]} ${l.y}`}</span>`;
+  } else {
+    const b1 = f.b, b2 = l.b;
+    $("mBs").innerHTML = b1.y===b2.y
+      ? `<span class="bs-np">${BS_MONTHS_NP[b1.m]} – ${BS_MONTHS_NP[b2.m]} ${np(b1.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} – ${BS_MONTHS[b2.m]} ${b1.y} BS</span>`
+      : `<span class="bs-np">${BS_MONTHS_NP[b1.m]} ${np(b1.y)} – ${BS_MONTHS_NP[b2.m]} ${np(b2.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} ${b1.y} – ${BS_MONTHS[b2.m]} ${b2.y} BS</span>`;
+  }
 
-  const first = new Date(y,m,1).getDay();
+  const first = f.w;
   let html = "";
   for(let i=0;i<first;i++) html += `<div class="cell pad" aria-hidden="true"></div>`;
-  for(let d=1; d<=days; d++){
-    const k = key(y,m,d), b = toBS(y,m,d), hs = byDate[k]||[];
-    const dow = (first+d-1)%7;
+  keys.forEach((k,idx)=>{
+    const i = dayInfo(k), b = i.b, hs = byDate[k]||[];
     const cls = ["cell"];
-    if(dow===6||dow===0) cls.push("sat");
+    if(i.w===6||i.w===0) cls.push("sat");
     if(hs.length) cls.push(hs[0].t);
     if(k===TODAY) cls.push("today");
     if(k===state.sel) cls.push("sel");
-    const showM = b.d===1 || d===1;
+    // big number = main calendar; small = the other one, with its month name where it changes
+    const big = BSMODE ? b.d : i.d;
+    const small = BSMODE
+      ? `${i.d===1||idx===0?`<span class="m">${MON[i.m]}</span>`:""}${i.d}`
+      : `${b.d===1||idx===0?`<span class="m">${BS_MONTHS_NP[b.m]}</span>`:""}${np(b.d)}`;
     const label = hs.length ? `<div class="hol">${hs[0].n}</div>${hs.length>1?`<div class="hol more">+${hs.length-1} more</div>`:""}` : "";
     const dots = hs.length ? `<div class="dots">${hs.map(h=>`<i class="${h.t}"></i>`).join("")}</div>` : "";
-    const aria = `${MONTHS[m]} ${d}, ${BS_MONTHS[b.m]} ${b.d} ${b.y} BS${hs.length?": "+hs.map(h=>h.n).join(", "):""}`;
+    const aria = `${MONTHS[i.m]} ${i.d}, ${BS_MONTHS[b.m]} ${b.d} ${b.y} BS${hs.length?": "+hs.map(h=>h.n).join(", "):""}`;
     html += `<button class="${cls.join(" ")}" data-k="${k}" aria-label="${aria}">
-      <div class="row"><span class="ad">${d}</span><span class="bsd">${showM?`<span class="m">${BS_MONTHS_NP[b.m]}</span>`:""}${np(b.d)}</span></div>
+      <div class="row"><span class="ad">${big}</span><span class="bsd">${small}</span></div>
       ${label}${dots}</button>`;
-  }
-  const tail = (7 - (first+days)%7)%7;
+  });
+  const tail = (7 - (first+keys.length)%7)%7;
   for(let i=0;i<tail;i++) html += `<div class="cell pad" aria-hidden="true"></div>`;
   $("grid").innerHTML = html;
 
-  const ks = Object.keys(byDate).filter(k=>k.startsWith(`${y}-${String(m+1).padStart(2,"0")}`)).sort();
-  $("listTitle").textContent = `Holidays in ${MONTHS[m]}`;
+  const ks = keys.filter(k=>byDate[k]);
+  $("listTitle").textContent = `Holidays in ${NAMES[m]}`;
   $("list").innerHTML = ks.length ? ks.flatMap(k=>byDate[k].map(h=>{
-    const dd = +k.slice(8), b = toBS(y,m,dd);
-    const wd = DOW[new Date(y,m,dd).getDay()][0];
-    return `<li data-k="${k}"><div class="dt"><b>${dd}</b><small>${wd}</small></div>
+    const i = dayInfo(k), b = i.b;
+    const wd = DOW[i.w][0];
+    return `<li data-k="${k}"><div class="dt"><b>${BSMODE?b.d:i.d}</b><small>${wd}</small></div>
       <div><div class="nm">${h.n}</div>
-      <div class="sub">${h.np} · ${BS_MONTHS_NP[b.m]} ${np(b.d)}</div>
+      <div class="sub">${h.np} · ${BSMODE ? `${MON[i.m]} ${i.d}` : `${BS_MONTHS_NP[b.m]} ${np(b.d)}`}</div>
       <div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est" title="Expected date; no government list yet">est.</span>`:""}</div></div></li>`;
   })).join("") : `<li style="cursor:default"><p class="empty" style="grid-column:1/-1">No holidays this month apart from weekends.</p></li>`;
 
@@ -1151,9 +1194,9 @@ function renderDetail(){
   const tags = hs.filter(h=>h.t!=="obs").map(h=>`<span class="htag ${h.t}" title="${h.np}">${h.n.split(" · ")[0]}${h.est?" (est.)":""}</span>`).join("");
   $("detail").innerHTML = `<div class="dh-date">
       <div class="dh-label"><h3>${k===TODAY?"Today":"Selected day"}</h3>${tags}</div>
-      <div class="big">${wdName}, ${MON[m]} ${d}, ${y}</div>
+      <div class="big">${BSMODE ? `${wdName}, ${BS_MONTHS[b.m]} ${b.d}, ${b.y}` : `${wdName}, ${MON[m]} ${d}, ${y}`}</div>
       <div class="bsfull">${bsLabel(b)} · ${WEEKDAY_NP[wd.getDay()]}</div>
-      <div class="bsrom">${BS_MONTHS[b.m]} ${b.d}, ${b.y} BS</div>
+      <div class="bsrom">${BSMODE ? `${MON[m]} ${d}, ${y} AD` : `${BS_MONTHS[b.m]} ${b.d}, ${b.y} BS`}</div>
     </div>
     <div class="dh-tasks" id="dhTasks" aria-live="polite"></div>
     ${nextHolidayHTML(k)}`;
@@ -1169,59 +1212,68 @@ function nextHolidayHTML(from){
   const [y,m,d] = up.split("-").map(Number), [fy,fm,fd] = from.split("-").map(Number);
   const diff = Math.round((Date.UTC(y,m-1,d)-Date.UTC(fy,fm-1,fd))/864e5);
   const b = toBS(y,m-1,d);
-  return `<div class="nexth" data-k="${up}" role="button" tabindex="0"><span>Next holiday</span><b>${h.n}</b><span>${MON[m-1]} ${d} · ${bsLabel(b)}</span><span class="cd">${diff===1?(from===TODAY?"Tomorrow":"Next day"):`in ${diff} days`}</span></div>`;
+  return `<div class="nexth" data-k="${up}" role="button" tabindex="0"><span>Next holiday</span><b>${h.n}</b><span>${BSMODE ? `${BS_MONTHS[b.m]} ${b.d} · ${MON[m-1]} ${d}` : `${MON[m-1]} ${d} · ${bsLabel(b)}`}</span><span class="cd">${diff===1?(from===TODAY?"Tomorrow":"Next day"):`in ${diff} days`}</span></div>`;
 }
 
 // ---------- year view ----------
-function longBreaks(y){ // runs of 3+ consecutive days off (weekends + public holidays)
+function longBreaks(yk){ // runs of 3+ consecutive days off (weekends + public holidays) touching the year's days yk
   const out = []; let run = [];
+  const inYear = new Set(yk);
   const flush = ()=>{ if(run.length>=3 && run.some(k=>(byDate[k]||[]).some(h=>h.t==="public"))) out.push(run); run=[]; };
-  for(let t=Date.UTC(y,0,1)-3*864e5; t<=Date.UTC(y,11,31)+3*864e5; t+=864e5){
-    const dt=new Date(t), k=key(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate());
+  const [y0,m0,d0] = parseK(yk[0]), [y1,m1,d1] = parseK(yk[yk.length-1]);
+  for(let t=Date.UTC(y0,m0-1,d0)-3*864e5; t<=Date.UTC(y1,m1-1,d1)+3*864e5; t+=864e5){
+    const k = kOfUTC(t);
     if(isOff(k)) run.push(k); else flush();
   }
   flush();
-  return out.filter(r=>r.some(k=>k.startsWith(y+"-")));
+  return out.filter(r=>r.some(k=>inYear.has(k)));
 }
 
 function renderYear(){
   const y = state.y;
-  $("yTitle").innerHTML = `${y}<span>${(()=>{const a=toBS(y,0,1),b=toBS(y,11,31);return `${np(a.y)} – ${np(b.y)} · ${a.y}–${b.y} BS`;})()}</span>`;
-  const yearKeys = Object.keys(byDate).filter(k=>k.startsWith(y+"-")).sort();
+  const NAMES = BSMODE ? BS_MONTHS : MONTHS;
+  const months = NAMES.map((_,m)=>monthKeys(y,m)), allKeys = months.flat();
+  const fi = dayInfo(allKeys[0]), li = dayInfo(allKeys[allKeys.length-1]);
+  $("yTitle").innerHTML = BSMODE
+    ? `${y}<span>${np(y)} · ${fi.y}–${li.y} AD</span>`
+    : `${y}<span>${np(fi.b.y)} – ${np(li.b.y)} · ${fi.b.y}–${li.b.y} BS</span>`;
+  const yearKeys = allKeys.filter(k=>byDate[k]);
   const pubWeekday = yearKeys.filter(k=>{const w=new Date(k+"T00:00").getDay(); return w!==0&&w!==6 && byDate[k].some(h=>h.t==="public");}).length;
-  const breaks = longBreaks(y);
+  const breaks = longBreaks(allKeys);
   $("yStats").innerHTML = `
     <div><b>${pubWeekday}</b><span>public holidays on weekdays</span></div>
     <div><b>${breaks.length}</b><span>breaks of 3+ days off</span></div>`;
 
   let html = "";
-  for(let m=0;m<12;m++){
-    const days = new Date(y,m+1,0).getDate(), first = new Date(y,m,1).getDay();
-    const a = toBS(y,m,1), b = toBS(y,m,days);
+  months.forEach((ks,m)=>{
+    const a = dayInfo(ks[0]), z = dayInfo(ks[ks.length-1]);
     let cells = "";
-    for(let i=0;i<first;i++) cells += `<span></span>`;
-    for(let d=1; d<=days; d++){
-      const k=key(y,m,d), hs=byDate[k]||[], w=(first+d-1)%7, bs=toBS(y,m,d);
-      const cls=["md"]; if(w===0||w===6) cls.push("we"); if(hs.length) cls.push(hs[0].t); if(k===TODAY) cls.push("today"); if(k===state.sel) cls.push("sel");
-      const tip = `${MON[m]} ${d} · ${BS_MONTHS[bs.m]} ${bs.d}${hs.length?" · "+hs.map(h=>h.n).join(", "):""}`;
-      cells += `<button class="${cls.join(" ")}" data-k="${k}" title="${tip}" aria-label="${tip}">${d}<small>${np(bs.d)}</small></button>`;
-    }
-    html += `<div class="mini"><button class="mini-h" data-m="${m}"><span>${MONTHS[m]}</span><small>${BS_MONTHS_NP[a.m]}–${BS_MONTHS_NP[b.m]}</small></button>
+    for(let i=0;i<a.w;i++) cells += `<span></span>`;
+    ks.forEach(k=>{
+      const i=dayInfo(k), hs=byDate[k]||[], bs=i.b;
+      const cls=["md"]; if(i.w===0||i.w===6) cls.push("we"); if(hs.length) cls.push(hs[0].t); if(k===TODAY) cls.push("today"); if(k===state.sel) cls.push("sel");
+      const tip = `${MON[i.m]} ${i.d} · ${BS_MONTHS[bs.m]} ${bs.d}${hs.length?" · "+hs.map(h=>h.n).join(", "):""}`;
+      cells += `<button class="${cls.join(" ")}" data-k="${k}" title="${tip}" aria-label="${tip}">${BSMODE?bs.d:i.d}<small>${BSMODE?i.d:np(bs.d)}</small></button>`;
+    });
+    const sub = BSMODE ? `${MON[a.m]}–${MON[z.m]}` : `${BS_MONTHS_NP[a.b.m]}–${BS_MONTHS_NP[z.b.m]}`;
+    html += `<div class="mini"><button class="mini-h" data-m="${m}"><span>${NAMES[m]}</span><small>${sub}</small></button>
       <div class="mini-dow">${DOW.map(d=>`<span>${d[0][0]}</span>`).join("")}</div><div class="mini-grid">${cells}</div></div>`;
-  }
+  });
   $("yearGrid").innerHTML = html;
 
+  // "Kartik 5–8" / "Nov 5 – Dec 2" in the main calendar
+  const pm = k=>{ const i=dayInfo(k); return BSMODE ? [BS_MONTHS[i.b.m], i.b.d] : [MON[i.m], i.d]; };
   $("breaks").innerHTML = breaks.length ? breaks.map(r=>{
-    const f=r[0], l=r[r.length-1], [fy,fm,fd]=f.split("-").map(Number), [ly,lm,ld]=l.split("-").map(Number);
+    const f=r[0], [fm,fd]=pm(f), [lm,ld]=pm(r[r.length-1]);
     const names=[...new Set(r.flatMap(k=>(byDate[k]||[]).filter(h=>h.t==="public").map(h=>h.n.split(" · ")[0])))];
-    const range = fm===lm ? `${MON[fm-1]} ${fd}–${ld}` : `${MON[fm-1]} ${fd} – ${MON[lm-1]} ${ld}`;
+    const range = fm===lm ? `${fm} ${fd}–${ld}` : `${fm} ${fd} – ${lm} ${ld}`;
     return `<li data-k="${f}"><b>${r.length} days</b><span class="rg">${range}</span><span class="why">${names.slice(0,3).join(", ")}${names.length>3?"…":""}</span></li>`;
   }).join("") : `<li class="empty">No long breaks this year.</li>`;
 
-  $("yList").innerHTML = MONTHS.map((mn,m)=>{
-    const ks = yearKeys.filter(k=>+k.slice(5,7)===m+1 && byDate[k].some(h=>h.t!=="obs"));
+  $("yList").innerHTML = months.map((mk,m)=>{
+    const ks = mk.filter(k=>byDate[k] && byDate[k].some(h=>h.t!=="obs"));
     if(!ks.length) return "";
-    return `<div class="ym"><h4>${mn}</h4><ul>${ks.map(k=>{const h=byDate[k].find(h=>h.t!=="obs"); const d=+k.slice(8);
+    return `<div class="ym"><h4>${NAMES[m]}</h4><ul>${ks.map(k=>{const h=byDate[k].find(h=>h.t!=="obs"); const d=pm(k)[1];
       return `<li data-k="${k}" class="${h.t}"><span class="d">${d}</span><span>${h.n}${h.est?' <span class="tag est" title="Expected date; no government list yet">est.</span>':""}</span></li>`;}).join("")}</ul></div>`;
   }).join("");
 }
@@ -1296,7 +1348,7 @@ cv.aD.addEventListener("change",convA);
 $("cvToday").onclick = initConverter;
 $("view-convert").addEventListener("click",e=>{const b=e.target.closest("button[data-k]"); if(b) go(b.dataset.k);});
 
-function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); }
+function go(k){ const ym=ymOf(k); state.y=ym.y; state.m=ym.m; state.sel=k; setView("month"); }
 
 // a second tap on the same day within 450 ms counts as a double tap (mouse and touch alike)
 let lastTap = {k:null, t:0};
@@ -1325,18 +1377,19 @@ $("homeLink").onclick = e=>{
 // ---------- events ----------
 ["month","year","convert"].forEach(v=>$("tab-"+v).onclick=()=>setView(v));
 $("chips").addEventListener("click",e=>{const b=e.target.closest("button"); if(b){state.m=+b.dataset.m; render();}});
-for(let y=Y0;y<=Y1;y++) $("yearSel").add(new Option(y,y));
+function fillYearSel(){ const s=$("yearSel"); s.innerHTML=""; for(let y=yLo();y<=yHi();y++) s.add(new Option(y,y)); s.setAttribute("aria-label", BSMODE?"Year (BS)":"Year"); }
+fillYearSel();
 $("yearSel").addEventListener("change",e=>{state.y=+e.target.value; render();});
-$("yPrev").onclick=()=>{ if(state.y>Y0){state.y--; render();} };
-$("yNext").onclick=()=>{ if(state.y<Y1){state.y++; render();} };
+$("yPrev").onclick=()=>{ if(state.y>yLo()){state.y--; render();} };
+$("yNext").onclick=()=>{ if(state.y<yHi()){state.y++; render();} };
 $("prev").onclick=()=>{ if(state.m===0){state.y--;state.m=11}else state.m--; render(); };
 $("nextM").onclick=()=>{ if(state.m===11){state.y++;state.m=0}else state.m++; render(); };
-$("todayBtn").onclick=()=>{ if(state.view==="year"){ state.y = inRange?now.getFullYear():Y0; render(); } else go(inRange ? TODAY : Y0+"-01-01"); };
+$("todayBtn").onclick=()=>{ if(state.view==="year"){ state.y = ymOf(inRange?TODAY:Y0+"-01-01").y; render(); } else go(inRange ? TODAY : Y0+"-01-01"); };
 // single tap selects a day; double tap opens its tasks
 $("grid").addEventListener("click",e=>{const c=e.target.closest(".cell[data-k]"); if(!c) return; const k=c.dataset.k, dbl=isDoubleTap(k); state.sel=k; render(); if(dbl) openTasks(k);});
 $("list").addEventListener("click",e=>{const li=e.target.closest("li[data-k]"); if(!li) return; const k=li.dataset.k, dbl=isDoubleTap(k); state.sel=k; render(); if(dbl) openTasks(k);});
 $("view-year").addEventListener("click",e=>{
-  const h=e.target.closest(".mini-h"); if(h){ state.m=+h.dataset.m; state.sel=key(state.y,state.m,1); setView("month"); return; }
+  const h=e.target.closest(".mini-h"); if(h){ state.m=+h.dataset.m; state.sel=monthKeys(state.y,state.m)[0]; setView("month"); return; }
   const d=e.target.closest(".md[data-k]");
   if(d){
     const k=d.dataset.k;
