@@ -62,3 +62,18 @@ create policy "own settings" on public.user_settings
   for all to authenticated
   using (user_id = (select auth.uid()))
   with check (user_id = (select auth.uid()));
+
+-- ---------- repeating tasks (added later; safe to re-run) ----------
+-- repeat: none | daily | weekly | monthly | yearly, every `repeat_every` of those.
+-- repeat_until: last day (null = forever). repeat_count: "ends after N times" as chosen in the app.
+-- done_dates / skip_dates: the repeats ticked off / deleted one by one.
+alter table public.tasks add column if not exists repeat       text    not null default 'none';
+alter table public.tasks add column if not exists repeat_every integer not null default 1;
+alter table public.tasks add column if not exists repeat_until date;
+alter table public.tasks add column if not exists repeat_count integer;
+alter table public.tasks add column if not exists done_dates   date[]  not null default '{}';
+alter table public.tasks add column if not exists skip_dates   date[]  not null default '{}';
+do $$ begin
+  alter table public.tasks add constraint tasks_repeat_ok
+    check (repeat in ('none','daily','weekly','monthly','yearly') and repeat_every between 1 and 99);
+exception when duplicate_object then null; end $$;

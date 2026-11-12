@@ -1,6 +1,11 @@
 // Patro tasks: sign-in, the "Up next" strip, the day view (agenda list on phones,
 // timeline on computers) and the add/edit sheet. Data lives in Supabase.
 // Loaded after the main calendar script and uses its globals (state, render, $, toBS, MON, ...).
+//
+// A task row starts on `date`. Repeating tasks (repeat = daily|weekly|monthly|yearly, every N)
+// are expanded on the fly into one "occurrence" per day; done_dates / skip_dates hold the
+// per-day ticks and deletions. A task whose end time is earlier than its start runs overnight
+// and also shows on the next morning.
 (() => {
   const SB_URL = "https://usipczocwwortembguqf.supabase.co";
   // Publishable key: safe to ship in the page. Row level security limits every user to their own rows.
@@ -11,12 +16,16 @@
   const UNTIMED_REMIND_AT = "09:00"; // reminders for tasks without a time fire at 9 am that day
   const CACHE_KEY = "patro-tasks";
   const REMIND_CHOICES = [[0,"At start time"],[5,"5 min before"],[10,"10 min before"],[15,"15 min before"],[30,"30 min before"],[60,"1 hour before"],[120,"2 hours before"],[1440,"1 day before"],["custom","Custom…"]];
+  const REPEAT_CHOICES = [["none","Doesn't repeat"],["daily","Every day"],["weekly","Every week"],["weekly2","Every 2 weeks"],["monthly","Every month"],["yearly","Every year"],["custom","Custom…"]];
+  const UNIT = { daily: ["day","days"], weekly: ["week","weeks"], monthly: ["month","months"], yearly: ["year","years"] };
   const mqList = matchMedia("(max-width:900px)"); // agenda list instead of timeline
 
   let user = null;
   let settings = { default_remind_before: 15 };
-  let tasks = [];            // all of the user's tasks
-  let byDay = {};            // "YYYY-MM-DD" -> tasks sorted by time
+  let tasks = [];            // all of the user's task rows
+  let oneOff = {};           // "YYYY-MM-DD" -> non-repeating rows starting that day
+  let repeating = [];        // repeating rows
+  let memo = new Map();      // "YYYY-MM-DD" -> occurrences shown that day
   let openDay = null;        // date shown in the day view, or null when the holiday list shows
 
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -26,9 +35,15 @@
   const remindLabel = n => { const c = REMIND_CHOICES.find(x => x[0] === n); return c ? c[1] : (n % 60 === 0 ? `${n/60} h before` : `${n} min before`); };
   const nowMin = () => { const n = new Date(); return n.getHours()*60 + n.getMinutes(); };
   const todayKey = () => { const n = new Date(); return key(n.getFullYear(), n.getMonth(), n.getDate()); };
-  const endMin = t => { const s = toMin(t.start_time), e = toMin(t.end_time); return e != null && e > s ? e : s + 30; };
   const relMin = m => m < 60 ? `${m} min` : `${Math.floor(m/60)} h${m%60 ? ` ${m%60} min` : ""}`;
+  const parts = k => k.split("-").map(Number);
+  const addDays = (k, n) => { const [y,m,d] = parts(k); const t = new Date(y, m-1, d+n); return key(t.getFullYear(), t.getMonth(), t.getDate()); };
+  const dayNum = k => { const [y,m,d] = parts(k); return Math.round(Date.UTC(y, m-1, d) / 864e5); };
+  const shortDate = k => { const [y,m,d] = parts(k); return `${MON[m-1].slice(0,3)} ${d}${y !== new Date().getFullYear() ? `, ${y}` : ""}`; };
+  const isRep = t => !!t.repeat && t.repeat !== "none";
+  const overnight = t => { const s = toMin(t.start_time), e = toMin(t.end_time); return s != null && e != null && e < s; };
   const bell = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  const loop = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
   function toast(msg){
     let t = document.querySelector(".toast");
@@ -51,12 +66,73 @@
     dlg.showModal();
   }
 
+  // ---------- repeats ----------
+  function occursOn(t, k){
+    if (k < t.date) return false;
+    if (!isRep(t)) return k === t.date;
+    if (t.repeat_until && k > t.repeat_until) return false;
+    if (t.skip_dates?.includes(k)) return false;
+    const n = t.repeat_every || 1;
+    const [y0,m0,d0] = parts(t.date), [y,m,d] = parts(k);
+    switch (t.repeat) {
+      case "daily":   return (dayNum(k) - dayNum(t.date)) % n === 0;
+      case "weekly":  return (dayNum(k) - dayNum(t.date)) % (7*n) === 0;
+      case "monthly": return d === d0 && ((y - y0)*12 + m - m0) % n === 0;   // months without that day are skipped
+      case "yearly":  return d === d0 && m === m0 && (y - y0) % n === 0;
+    }
+    return false;
+  }
+  // date of the n-th repeat (1 = the first day), used for "ends after N times"
+  function nthDate(t, n){
+    const e = t.repeat_every || 1;
+    if (t.repeat === "daily") return addDays(t.date, (n-1)*e);
+    if (t.repeat === "weekly") return addDays(t.date, (n-1)*7*e);
+    const [y,m,d] = parts(t.date); let c = 0;
+    for (let i = 0; i < 100000; i += e) {
+      const yy = t.repeat === "yearly" ? y + i : y + Math.floor((m - 1 + i) / 12);
+      const mm = t.repeat === "yearly" ? m - 1 : (m - 1 + i) % 12;
+      if (new Date(yy, mm, d).getMonth() === mm && ++c === n) return key(yy, mm, d);
+    }
+    return null;
+  }
+  function repeatLabel(t, long){
+    const n = t.repeat_every || 1, [y,m,d] = parts(t.date);
+    let s;
+    if (n > 1) s = `Every ${n} ${UNIT[t.repeat][1]}`;
+    else s = { daily: "Every day", weekly: `Every ${DOW[new Date(y, m-1, d).getDay()][0]}`,
+      monthly: `Every month${long ? ` on the ${d}${[,"st","nd","rd"][d % 10 > 3 || Math.floor(d / 10) === 1 ? 0 : d % 10] || "th"}` : ""}`,
+      yearly: `Every year${long ? ` on ${MON[m-1].slice(0,3)} ${d}` : ""}` }[t.repeat];
+    if (!long) return s;
+    if (t.repeat_count) return `${s}, ${t.repeat_count} times (until ${shortDate(t.repeat_until)}).`;
+    if (t.repeat_until) return `${s}, until ${shortDate(t.repeat_until)}.`;
+    return `${s}, with no end date.`;
+  }
+
   // ---------- data ----------
   function index(){
-    byDay = {};
-    for (const t of tasks) (byDay[t.date] ||= []).push(t);
-    for (const d in byDay) byDay[d].sort((a,b) => (toMin(a.start_time) ?? -1) - (toMin(b.start_time) ?? -1) || a.created_at.localeCompare(b.created_at));
+    memo = new Map(); oneOff = {}; repeating = [];
+    for (const t of tasks) isRep(t) ? repeating.push(t) : (oneOff[t.date] ||= []).push(t);
   }
+  // one appearance of a task on a day. k = the day it starts; day = the day it is shown on.
+  function occ(t, k, cont){
+    const s = toMin(t.start_time), e = toMin(t.end_time);
+    const done = isRep(t) ? !!t.done_dates?.includes(k) : !!t.done;
+    if (cont) return { t, id: t.id, k, day: addDays(k, 1), cont: true, s: 0, e, done };
+    return { t, id: t.id, k, day: k, cont: false, s, done,
+      e: s == null ? null : e == null || e === s ? s + 30 : e < s ? e + 1440 : e };
+  }
+  const startsOn = k => [...(oneOff[k] || []), ...repeating.filter(t => occursOn(t, k))];
+  function dayList(k){
+    if (memo.has(k)) return memo.get(k);
+    const list = startsOn(k).map(t => occ(t, k, false));
+    const prev = addDays(k, -1);
+    for (const t of startsOn(prev)) if (overnight(t)) list.push(occ(t, prev, true));
+    list.sort((a,b) => (a.s ?? -1) - (b.s ?? -1) || (a.t.created_at || "").localeCompare(b.t.created_at || ""));
+    memo.set(k, list);
+    return list;
+  }
+  const findTask = id => tasks.find(t => t.id === id);
+
   function saveCache(){ try { localStorage.setItem(CACHE_KEY, JSON.stringify({ uid: user?.id, tasks })); } catch(e){} }
   function loadCache(uid){
     try { const c = JSON.parse(localStorage.getItem(CACHE_KEY)); if (c && c.uid === uid) { tasks = c.tasks || []; index(); } } catch(e){}
@@ -77,24 +153,39 @@
     if (data) settings = data;
   }
 
+  // when the next reminder fires (for a repeating task: the next repeat that isn't done yet)
   function remindAt(t){
     if (!t.remind) return null;
-    const time = t.start_time || UNTIMED_REMIND_AT;
-    const base = new Date(`${t.date}T${time.slice(0,5)}:00`);
-    return new Date(base.getTime() - (t.start_time ? t.remind_before : 0) * 60000).toISOString();
+    const at = k => new Date(`${k}T${(t.start_time || UNTIMED_REMIND_AT).slice(0,5)}:00`).getTime() - (t.start_time ? t.remind_before : 0) * 60000;
+    if (!isRep(t)) return new Date(at(t.date)).toISOString();
+    const now = Date.now(), today = todayKey();
+    for (let k = t.date > today ? t.date : today, i = 0; i < 1500; i++, k = addDays(k, 1)) {
+      if (t.repeat_until && k > t.repeat_until) return null;
+      if (occursOn(t, k) && !t.done_dates?.includes(k) && at(k) > now) return new Date(at(k)).toISOString();
+    }
+    return null;
   }
 
+  const dbHint = msg => /repeat|done_dates|skip_dates|column/i.test(msg)
+    ? "The database needs a small update: run supabase/schema.sql again in Supabase (SQL Editor)." : msg;
+
   async function saveTask(t){
+    const rep = isRep(t) ? t.repeat : "none";
     const row = { date: t.date, start_time: t.start_time || null, end_time: t.start_time ? (t.end_time || null) : null,
-      title: t.title, description: t.description || null, done: !!t.done, remind: !!t.remind,
-      remind_before: t.remind_before ?? settings.default_remind_before };
+      title: t.title, description: t.description || null, done: rep === "none" && !!t.done, remind: !!t.remind,
+      remind_before: t.remind_before ?? settings.default_remind_before,
+      repeat: rep, repeat_every: rep === "none" ? 1 : (t.repeat_every || 1),
+      repeat_until: rep === "none" ? null : (t.repeat_until || null),
+      repeat_count: rep === "none" ? null : (t.repeat_count || null),
+      done_dates: rep === "none" ? [] : (t.done_dates || []),
+      skip_dates: rep === "none" ? [] : (t.skip_dates || []) };
     row.remind_at = remindAt(row);
-    const old = t.id ? tasks.find(x => x.id === t.id) : null;
+    const old = t.id ? findTask(t.id) : null;
     // reminder time changed: let it fire again
     if (!old || old.remind_at !== row.remind_at) row.notified_at = null;
     const q = t.id ? sb.from("tasks").update(row).eq("id", t.id) : sb.from("tasks").insert(row);
     const { data, error } = await q.select().single();
-    if (error) throw error;
+    if (error) throw new Error(dbHint(error.message));
     tasks = tasks.filter(x => x.id !== data.id).concat(data); index(); saveCache(); refresh();
     return data;
   }
@@ -103,9 +194,13 @@
     if (error) throw error;
     tasks = tasks.filter(x => x.id !== id); index(); saveCache(); refresh();
   }
-  async function toggleDone(id){
-    const t = tasks.find(x => x.id === id); if (!t) return;
-    try { await saveTask({ ...t, done: !t.done }); }
+  // tick a task (for a repeating one: only the repeat starting on day k)
+  async function toggleDone(id, k){
+    const t = findTask(id); if (!t) return;
+    let patch;
+    if (isRep(t)) { const s = new Set(t.done_dates || []); s.has(k) ? s.delete(k) : s.add(k); patch = { done_dates: [...s].sort() }; }
+    else patch = { done: !t.done };
+    try { await saveTask({ ...t, ...patch }); }
     catch(e){ toast(navigator.onLine ? "Couldn't update: " + e.message : "You're offline. Change not saved."); }
   }
 
@@ -113,8 +208,8 @@
   function decorateMonth(){
     document.querySelectorAll("#grid .cell[data-k]").forEach(c => {
       c.querySelector(".tmark")?.remove();
-      const list = byDay[c.dataset.k]; if (!list?.length) return;
-      const open = list.filter(t => !t.done).length;
+      const list = dayList(c.dataset.k).filter(o => !o.cont); if (!list.length) return;
+      const open = list.filter(o => !o.done).length;
       const el = document.createElement("div");
       el.className = "tmark" + (open ? "" : " alldone");
       el.innerHTML = `<i></i><span>${open ? `${open} task${open>1?"s":""}` : "All done"}</span>`;
@@ -128,14 +223,14 @@
   // in progress or coming next and keeps following the clock unless you scrolled it yourself.
   let stripTouched = 0;
   function stripOrder(k){
-    const list = byDay[k] || [];
-    return [...list.filter(t => t.start_time), ...list.filter(t => !t.start_time)];
+    const list = dayList(k);
+    return [...list.filter(o => o.s != null), ...list.filter(o => o.s == null)];
   }
   function focusIndex(k, list){
-    if (k !== todayKey()) return Math.max(0, list.findIndex(t => !t.done));
+    if (k !== todayKey()) return Math.max(0, list.findIndex(o => !o.done));
     const n = nowMin();
-    let i = list.findIndex(t => t.start_time && !t.done && endMin(t) > n);
-    if (i < 0) i = list.findIndex(t => !t.start_time && !t.done);
+    let i = list.findIndex(o => o.s != null && !o.done && o.e > n);
+    if (i < 0) i = list.findIndex(o => o.s == null && !o.done);
     return i < 0 ? Math.max(0, list.length - 1) : i;
   }
   function renderStrip(keepScroll){
@@ -148,27 +243,31 @@
       return;
     }
     const list = stripOrder(k), fi = focusIndex(k, list), n = nowMin();
-    const left = list.filter(t => !t.done).length, done = list.length - left;
+    const counted = list.filter(o => !o.cont);
+    const left = counted.filter(o => !o.done).length, done = counted.length - left;
     let head = isToday ? "Today's tasks" : "Tasks";
     const f = list[fi];
-    if (isToday && f && !f.done && f.start_time) {
-      const s = toMin(f.start_time);
-      head = s <= n ? `Now · until ${fmtTime(hhmm(endMin(f)))}` : `Up next · in ${relMin(s - n)}`;
+    if (isToday && f && !f.done && f.s != null) {
+      head = f.s <= n ? `Now · until ${fmtTime(hhmm(f.e))}` : `Up next · in ${relMin(f.s - n)}`;
     }
-    const cards = list.map((t, i) => {
-      const past = isToday && t.start_time && endMin(t) <= n;
-      const now = isToday && t.start_time && toMin(t.start_time) <= n && endMin(t) > n;
-      const cls = ["up-card", t.done ? "done" : "", past && !t.done ? "past" : "", now && !t.done ? "now" : "", i === fi ? "focus" : ""].filter(Boolean).join(" ");
-      return `<button class="${cls}" data-id="${t.id}" type="button">
-        <span class="up-time">${t.start_time ? fmtTime(t.start_time) : "Any time"}${now && !t.done ? `<em>Now</em>` : ""}</span>
+    const cards = list.map((o, i) => {
+      const t = o.t;
+      const past = isToday && o.s != null && o.e <= n;
+      const now = isToday && o.s != null && o.s <= n && o.e > n;
+      const cls = ["up-card", o.done ? "done" : "", past && !o.done ? "past" : "", now && !o.done ? "now" : "", i === fi ? "focus" : ""].filter(Boolean).join(" ");
+      const time = o.cont ? `Until ${fmtTime(t.end_time)}` : o.s != null ? fmtTime(t.start_time) : "Any time";
+      const meta = o.done ? "Done"
+        : `${t.remind && !o.cont ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}${isRep(t) ? loop : ""}`;
+      return `<button class="${cls}" data-id="${t.id}" data-k="${o.k}" type="button">
+        <span class="up-time">${time}${now && !o.done ? `<em>Now</em>` : ""}</span>
         <span class="up-title">${esc(t.title)}</span>
-        <span class="up-meta">${t.done ? "Done" : t.remind ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}</span>
+        <span class="up-meta">${meta}</span>
       </button>`;
     }).join("");
     const prevLeft = $("upStrip")?.scrollLeft;
     box.innerHTML = `<div class="up-head"><h3>${head}</h3>${list.length ? `<button class="linkbtn" data-act="day" type="button">View day</button>` : ""}</div>
       ${list.length ? `<div class="up-strip" id="upStrip">${cards}</div>` : `<p class="up-empty">Nothing planned for ${isToday ? "today" : "this day"}.</p>`}
-      <div class="up-foot"><span>${list.length ? `${left} of ${list.length} left${done ? ` · ${done} done` : ""}` : ""}</span>
+      <div class="up-foot"><span>${counted.length ? `${left} of ${counted.length} left${done ? ` · ${done} done` : ""}` : ""}</span>
         <button class="btn primary sm" data-act="add" type="button">+ Add</button></div>`;
     const strip = $("upStrip");
     if (strip) {
@@ -180,7 +279,7 @@
   }
   document.addEventListener("click", e => {
     const box = e.target.closest("#dhTasks"); if (!box) return;
-    const card = e.target.closest(".up-card"); if (card) { openTaskDlg(tasks.find(t => t.id === card.dataset.id)); return; }
+    const card = e.target.closest(".up-card"); if (card) { openTaskDlg(findTask(card.dataset.id), card.dataset.k); return; }
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (act === "add") openTaskDlg({ date: state.sel });
     if (act === "day") showDay(state.sel);
@@ -210,7 +309,7 @@
   }
   // move the day view (and the calendar behind it) to another date
   function gotoDay(k){
-    const [y,m] = k.split("-").map(Number);
+    const [y,m] = parts(k);
     state.sel = k; state.y = y; state.m = m - 1;
     openDay = k;
     render();
@@ -218,48 +317,54 @@
   }
 
   function weekHTML(){
-    const [y,m,d] = openDay.split("-").map(Number);
+    const [y,m,d] = parts(openDay);
     const start = new Date(y, m-1, d - new Date(y, m-1, d).getDay());
     const tk = todayKey();
     let days = "";
     for (let i = 0; i < 7; i++) {
       const dt = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
       const k = key(dt.getFullYear(), dt.getMonth(), dt.getDate()), b = toBS(dt.getFullYear(), dt.getMonth(), dt.getDate());
-      const open = (byDay[k] || []).filter(t => !t.done).length;
+      const open = dayList(k).filter(o => !o.cont && !o.done).length;
       const hol = (byDate[k] || []).some(h => h.t === "public");
       const cls = ["wk-day", k === openDay ? "sel" : "", k === tk ? "today" : "", (i === 0 || i === 6 || hol) ? "off" : ""].filter(Boolean).join(" ");
       days += `<button class="${cls}" data-day="${k}" type="button" aria-label="${dt.toDateString()}${open ? `, ${open} open tasks` : ""}" ${k === openDay ? 'aria-current="date"' : ""}>
         <small>${DOW[i][0]}</small><b>${dt.getDate()}</b><i>${b ? np(b.d) : ""}</i><span class="wk-dot${open ? "" : " none"}"></span></button>`;
     }
-    const prevK = key(start.getFullYear(), start.getMonth(), start.getDate() - 7), nextK = key(start.getFullYear(), start.getMonth(), start.getDate() + 7);
-    const norm = s => { const [a,b,c] = s.split("-").map(Number); const t = new Date(a, b-1, c); return key(t.getFullYear(), t.getMonth(), t.getDate()); };
-    return `<div class="wk"><button class="wk-nav" data-day="${norm(prevK)}" type="button" aria-label="Previous week">‹</button>
+    const sk = key(start.getFullYear(), start.getMonth(), start.getDate());
+    return `<div class="wk"><button class="wk-nav" data-day="${addDays(sk, -7)}" type="button" aria-label="Previous week">‹</button>
       <div class="wk-days">${days}</div>
-      <button class="wk-nav" data-day="${norm(nextK)}" type="button" aria-label="Next week">›</button></div>`;
+      <button class="wk-nav" data-day="${addDays(sk, 7)}" type="button" aria-label="Next week">›</button></div>`;
   }
+
+  const check = o => `<span class="tcheck" role="checkbox" aria-checked="${o.done}" aria-label="Mark done" data-done="${o.id}" data-k="${o.k}"></span>`;
 
   function agendaHTML(list){
     if (!list.length) return `<div class="ag-empty"><p>No tasks for this day.</p><button class="btn primary" id="agAdd" type="button">+ Add a task</button></div>`;
     const isToday = openDay === todayKey(), n = nowMin();
     const groups = [
-      ["Any time", list.filter(t => !t.start_time)],
-      ["Morning", list.filter(t => t.start_time && toMin(t.start_time) < 720)],
-      ["Afternoon", list.filter(t => t.start_time && toMin(t.start_time) >= 720 && toMin(t.start_time) < 1020)],
-      ["Evening", list.filter(t => t.start_time && toMin(t.start_time) >= 1020)],
+      ["Any time", list.filter(o => o.s == null)],
+      ["Morning", list.filter(o => o.s != null && o.s < 720)],
+      ["Afternoon", list.filter(o => o.s != null && o.s >= 720 && o.s < 1020)],
+      ["Evening", list.filter(o => o.s != null && o.s >= 1020)],
     ];
     let nowShown = !isToday, html = "";
     const nowLine = `<div class="ag-now" role="presentation"><span>Now · ${fmtTime(hhmm(n))}</span></div>`;
     for (const [label, items] of groups) {
       if (!items.length) continue;
       html += `<div class="ag-group"><h4>${label}</h4>`;
-      for (const t of items) {
-        if (!nowShown && t.start_time && toMin(t.start_time) > n) { html += nowLine; nowShown = true; }
-        const live = isToday && t.start_time && toMin(t.start_time) <= n && endMin(t) > n && !t.done;
-        html += `<div class="ag-row${t.done ? " done" : ""}${live ? " live" : ""}" data-id="${t.id}" role="button" tabindex="0">
-          <span class="tcheck" role="checkbox" aria-checked="${t.done}" aria-label="Mark done" data-done="${t.id}"></span>
-          <span class="ag-time">${t.start_time ? `${fmtTime(t.start_time)}${t.end_time ? `<small>${fmtTime(t.end_time)}</small>` : ""}` : ""}</span>
-          <span class="ag-main"><b>${esc(t.title)}</b>${t.description ? `<small>${esc(t.description.split("\n")[0])}</small>` : ""}</span>
-          ${t.remind && !t.done ? `<span class="ag-bell" title="Reminder ${t.start_time ? remindLabel(t.remind_before) : "at 9 am"}">${bell}</span>` : ""}
+      for (const o of items) {
+        const t = o.t;
+        if (!nowShown && o.s != null && o.s > n) { html += nowLine; nowShown = true; }
+        const live = isToday && o.s != null && o.s <= n && o.e > n && !o.done;
+        const time = o.cont ? `Until<small>${fmtTime(t.end_time)}</small>`
+          : o.s != null ? `${fmtTime(t.start_time)}${t.end_time ? `<small>${fmtTime(t.end_time)}${overnight(t) ? "<br>next day" : ""}</small>` : ""}` : "";
+        const sub = [o.cont ? `Started yesterday ${fmtTime(t.start_time)}` : "", isRep(t) ? repeatLabel(t) : "",
+          t.description ? t.description.split("\n")[0] : ""].filter(Boolean).map(esc).join(" · ");
+        html += `<div class="ag-row${o.done ? " done" : ""}${live ? " live" : ""}" data-id="${t.id}" data-k="${o.k}" role="button" tabindex="0">
+          ${check(o)}
+          <span class="ag-time">${time}</span>
+          <span class="ag-main"><b>${esc(t.title)}</b>${sub ? `<small>${isRep(t) ? loop : ""}${sub}</small>` : ""}</span>
+          ${t.remind && !o.done && !o.cont ? `<span class="ag-bell" title="Reminder ${t.start_time ? remindLabel(t.remind_before) : "at 9 am"}">${bell}</span>` : ""}
         </div>`;
       }
       html += `</div>`;
@@ -269,21 +374,23 @@
   }
 
   function timelineHTML(list){
-    const untimed = list.filter(t => !t.start_time), timed = list.filter(t => t.start_time);
+    const untimed = list.filter(o => o.s == null), timed = list.filter(o => o.s != null);
     const hours = Array.from({length:24}, (_,h) => `<div class="tl-hour" data-h="${h}"><span>${h===0?"":fmtTime(hhmm(h*60)).replace(":00","")}</span><div></div></div>`).join("");
-    // lay out overlapping blocks side by side
-    const items = timed.map(t => { const s = toMin(t.start_time); return { t, s, e: Math.max(endMin(t), s + 25) }; });
+    // lay out overlapping blocks side by side; overnight tasks are cut at midnight
+    const items = timed.map(o => ({ o, s: o.s, e: Math.max(Math.min(o.e, 1440), o.s + 25) }));
     let cluster = [], clusterEnd = -1;
     const flush = () => { const cols = []; for (const it of cluster) { let c = cols.findIndex(end => end <= it.s); if (c < 0) { c = cols.length; cols.push(0); } cols[c] = it.e; it.col = c; } cluster.forEach(it => it.cols = cols.length); cluster = []; };
     for (const it of items) { if (it.s >= clusterEnd) flush(); cluster.push(it); clusterEnd = Math.max(clusterEnd, it.e); }
     flush();
-    const blocks = items.map(({t,s,e,col,cols}) => `<div class="tblock${t.done?" done":""}" role="button" tabindex="0" data-id="${t.id}"
+    const blocks = items.map(({o,s,e,col,cols}) => { const t = o.t;
+      const when = o.cont ? `until ${fmtTime(t.end_time)} · from yesterday`
+        : `${fmtTime(t.start_time)}${t.end_time ? ` – ${fmtTime(t.end_time)}${overnight(t) ? " (next day)" : ""}` : ""}`;
+      return `<div class="tblock${o.done?" done":""}" role="button" tabindex="0" data-id="${t.id}" data-k="${o.k}"
         style="top:${s*PX_PER_MIN}px;height:${(e-s)*PX_PER_MIN-2}px;left:calc(${col}*100%/${cols});width:calc(100%/${cols} - 3px)">
-        <span class="tcheck" role="checkbox" aria-checked="${t.done}" aria-label="Mark done" data-done="${t.id}"></span>
-        <b>${esc(t.title)}</b><small>${fmtTime(t.start_time)}${t.end_time?` – ${fmtTime(t.end_time)}`:""}</small></div>`).join("");
+        ${check(o)}<b>${isRep(t) ? loop : ""}${esc(t.title)}</b><small>${when}</small></div>`; }).join("");
     const nowLine = openDay === todayKey() ? `<div class="tl-now" style="top:${nowMin()*PX_PER_MIN}px"></div>` : "";
-    const chips = untimed.length ? `<span class="lab">Any time</span>` + untimed.map(t => `<div class="tchip${t.done?" done":""}" role="button" tabindex="0" data-id="${t.id}">
-        <span class="tcheck" role="checkbox" aria-checked="${t.done}" aria-label="Mark done" data-done="${t.id}"></span>${esc(t.title)}</div>`).join("") : "";
+    const chips = untimed.length ? `<span class="lab">Any time</span>` + untimed.map(o => `<div class="tchip${o.done?" done":""}" role="button" tabindex="0" data-id="${o.id}" data-k="${o.k}">
+        ${check(o)}${isRep(o.t) ? loop : ""}${esc(o.t.title)}</div>`).join("") : "";
     return `<div class="dp-untimed">${chips}</div>
       <div class="dp-scroll" id="dpScroll"><div class="tl">${hours}<div class="tl-blocks">${blocks}</div>${nowLine}</div></div>`;
   }
@@ -292,7 +399,7 @@
     if (!openDay) return;
     const prevTop = $("dpScroll")?.scrollTop;
     const listMode = mqList.matches;
-    const [y,m,d] = openDay.split("-").map(Number);
+    const [y,m,d] = parts(openDay);
     const dt = new Date(y, m-1, d), b = toBS(y, m-1, d);
     const hols = (byDate[openDay] || []).filter(h => h.t !== "obs").map(h => `<span class="htag ${h.t}">${h.n.split(" · ")[0]}</span>`).join("");
     const head = `<div class="dp-head">
@@ -302,17 +409,18 @@
         ${user && !listMode ? `<button class="btn primary" id="dpAdd" type="button">+ Add</button>` : ""}
       </div>${weekHTML()}`;
 
+    const list = dayList(openDay);
     let body;
     if (!sb) body = `<div class="dp-empty">Tasks need an internet connection the first time you open the app.</div>`;
     else if (!user) body = `<div class="dp-empty">Sign in to add tasks and get reminders on your phone.<br><button class="btn primary" id="dpSignin" type="button">Sign in</button></div>`;
-    else body = listMode ? `<div class="dp-scroll" id="dpScroll">${agendaHTML(byDay[openDay] || [])}</div>` : timelineHTML(byDay[openDay] || []);
+    else body = listMode ? `<div class="dp-scroll" id="dpScroll">${agendaHTML(list)}</div>` : timelineHTML(list);
 
     $("dayPanel").innerHTML = head + `<div class="dp-body">${body}</div>` + (user && listMode ? `<button class="fab" id="dpFab" type="button" aria-label="Add task">+</button>` : "");
     wire();
     if (!scroll && prevTop != null && $("dpScroll")) $("dpScroll").scrollTop = prevTop;
     if (scroll && !listMode && $("dpScroll")) {
-      const timed = (byDay[openDay] || []).filter(t => t.start_time);
-      const target = openDay === todayKey() ? nowMin() - 90 : (timed.length ? toMin(timed[0].start_time) : 8*60) - 60;
+      const timed = list.filter(o => o.s != null && !o.cont);
+      const target = openDay === todayKey() ? nowMin() - 90 : (timed.length ? timed[0].s : 8*60) - 60;
       $("dpScroll").scrollTop = Math.max(0, target) * PX_PER_MIN;
     }
     if (scroll && listMode) $("dayPanel").querySelector(".ag-now, .ag-row.live")?.scrollIntoView({ block: "center" });
@@ -327,39 +435,53 @@
     const panel = $("dayPanel");
     panel.onclick = e => {
       const day = e.target.closest("[data-day]"); if (day) { gotoDay(day.dataset.day); return; }
-      const chk = e.target.closest("[data-done]"); if (chk) { e.stopPropagation(); toggleDone(chk.dataset.done); return; }
-      const row = e.target.closest("[data-id]"); if (row) { openTaskDlg(tasks.find(t => t.id === row.dataset.id)); return; }
+      const chk = e.target.closest("[data-done]"); if (chk) { e.stopPropagation(); toggleDone(chk.dataset.done, chk.dataset.k); return; }
+      const row = e.target.closest("[data-id]"); if (row) { openTaskDlg(findTask(row.dataset.id), row.dataset.k); return; }
       const slot = e.target.closest(".tl-hour > div");
       if (slot && user) {
         const h = +slot.parentElement.dataset.h, r = slot.getBoundingClientRect();
         const min = h*60 + ((e.clientY - r.top) / r.height >= .5 ? 30 : 0);
-        openTaskDlg({ date: openDay, start_time: hhmm(min), end_time: hhmm(Math.min(min + 60, 23*60 + 59)) });
+        openTaskDlg({ date: openDay, start_time: hhmm(min), end_time: hhmm((min + 60) % 1440) });
       }
     };
-    panel.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-id]")) { e.preventDefault(); openTaskDlg(tasks.find(t => t.id === e.target.dataset.id)); } };
+    panel.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-id]")) { e.preventDefault(); openTaskDlg(findTask(e.target.dataset.id), e.target.dataset.k); } };
   }
 
   // ---------- add / edit sheet ----------
-  function openTaskDlg(t){
+  // occK: for a repeating task, the repeat that was tapped (Done / "delete this day" apply to it)
+  function openTaskDlg(t, occK){
     if (!t) return;
     if (!user) { openAuthDlg(); return; }
-    const isNew = !t.id;
+    const isNew = !t.id, rep = isRep(t);
+    occK = occK || t.date;
     const rb = t.remind_before ?? settings.default_remind_before;
     const preset = REMIND_CHOICES.some(c => c[0] === rb);
+    const every = t.repeat_every || 1;
+    const repVal = !rep ? "none" : every === 1 ? t.repeat : t.repeat === "weekly" && every === 2 ? "weekly2" : "custom";
+    const doneNow = rep ? !!t.done_dates?.includes(occK) : !!t.done;
     const dlg = $("taskDlg");
     dlg.classList.add("sheet");
     dlg.innerHTML = `<form method="dialog" class="sh" id="taskForm" novalidate>
       <div class="sh-grab" aria-hidden="true"></div>
-      <div class="sh-top"><h2>${isNew ? "New task" : "Edit task"}</h2>
+      <div class="sh-top"><h2>${isNew ? "New task" : rep ? "Edit repeating task" : "Edit task"}</h2>
         <button type="button" class="iconbtn" id="tCancel" aria-label="Close">×</button></div>
       <input class="sh-title" id="tTitle" maxlength="200" value="${esc(t.title)}" placeholder="What needs doing?" autocomplete="off" aria-label="Task title">
       <div class="sh-rows">
-        <label class="sh-row"><span>Date</span><input type="date" id="tDate" value="${t.date}" required></label>
+        <label class="sh-row"><span id="tDateLab">Date</span><input type="date" id="tDate" value="${t.date}" required></label>
         <div class="sh-row sh-times">
           <label><span>Start</span><input type="time" id="tStart" value="${(t.start_time||"").slice(0,5)}"></label>
           <label><span>End</span><input type="time" id="tEnd" value="${(t.end_time||"").slice(0,5)}"></label>
         </div>
-        <p class="sh-hint" id="tTimeHint">Leave Start empty for a task you can do any time that day.</p>
+        <p class="sh-hint" id="tTimeHint"></p>
+        <label class="sh-row"><span>${loop}Repeat</span><select id="tRepeat" aria-label="Repeat">${REPEAT_CHOICES.map(([v,l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
+        <div class="sh-row" id="tEveryWrap" hidden><span>Every</span><span class="sh-pair">
+          <input type="number" id="tEvery" min="1" max="99" step="1" value="${every}" aria-label="Repeat every">
+          <select id="tUnit" aria-label="Repeat unit">${Object.entries(UNIT).map(([v,[,pl]]) => `<option value="${v}">${pl}</option>`).join("")}</select></span></div>
+        <div class="sh-row" id="tEndsWrap" hidden><span>Ends</span><span class="sh-pair">
+          <select id="tEnds" aria-label="When the repeats end"><option value="never">Never</option><option value="date">On date</option><option value="count">After</option></select>
+          <input type="date" id="tUntil" value="${t.repeat_until || ""}" aria-label="Last day">
+          <input type="number" id="tCount" min="2" max="500" step="1" value="${t.repeat_count || 10}" aria-label="Number of times"><em id="tCountLab">times</em></span></div>
+        <p class="sh-hint" id="tRepeatHint" hidden></p>
         <div class="sh-row sh-remind">
           <label class="toggle"><input type="checkbox" id="tRemind" ${t.remind === false ? "" : "checked"}><span>${bell}Remind me</span></label>
           <select id="tBefore" aria-label="When to remind">${REMIND_CHOICES.map(([v,l]) => `<option value="${v}">${l}</option>`).join("")}</select>
@@ -368,57 +490,128 @@
         <p class="sh-hint" id="tRemindHint" hidden>No start time, so the reminder comes at 9 am.</p>
         <button type="button" class="linkbtn sh-notebtn" id="tNoteBtn" ${t.description ? "hidden" : ""}>+ Add note</button>
         <label class="sh-note" id="tNoteWrap" ${t.description ? "" : "hidden"}><span>Note</span><textarea id="tDesc" rows="3">${esc(t.description)}</textarea></label>
-        ${isNew ? "" : `<label class="toggle sh-done"><input type="checkbox" id="tDone" ${t.done ? "checked" : ""}><span>Done</span></label>`}
+        ${isNew ? "" : `<label class="toggle sh-done"><input type="checkbox" id="tDone" ${doneNow ? "checked" : ""}><span>${rep ? `Done on ${shortDate(occK)}` : "Done"}</span></label>`}
       </div>
       <p class="err" id="tErr"></p>
       <button type="submit" class="btn primary sh-save" id="tSave">${isNew ? "Add task" : "Save changes"}</button>
-      ${isNew ? "" : `<button type="button" class="btn ghost danger sh-del" id="tDel">Delete task</button>`}
+      ${isNew ? "" : rep
+        ? `<div class="sh-delrow"><button type="button" class="btn ghost danger sh-del" id="tSkip">Delete ${shortDate(occK)} only</button>
+           <button type="button" class="btn ghost danger sh-del" id="tDel">Delete all repeats</button></div>`
+        : `<button type="button" class="btn ghost danger sh-del" id="tDel">Delete task</button>`}
     </form>`;
     $("tBefore").value = preset ? String(rb) : "custom";
+    $("tRepeat").value = repVal;
+    $("tUnit").value = rep ? t.repeat : "daily";
+    $("tEnds").value = t.repeat_count ? "count" : t.repeat_until ? "date" : "never";
 
+    // read the repeat settings from the form
+    const readRepeat = () => {
+      const v = $("tRepeat").value;
+      if (v === "none") return { repeat: "none", repeat_every: 1 };
+      if (v === "custom") return { repeat: $("tUnit").value, repeat_every: Math.round(+$("tEvery").value) };
+      if (v === "weekly2") return { repeat: "weekly", repeat_every: 2 };
+      return { repeat: v, repeat_every: 1 };
+    };
     const sync = () => {
       const on = $("tRemind").checked, timed = !!$("tStart").value;
       $("tBefore").hidden = !on || !timed;
       $("tCustomWrap").hidden = !on || !timed || $("tBefore").value !== "custom";
       $("tRemindHint").hidden = !on || timed;
-      $("tTimeHint").hidden = timed;
+      const s = toMin($("tStart").value), e = toMin($("tEnd").value), hint = $("tTimeHint");
+      if (s == null) { hint.hidden = false; hint.textContent = "Leave Start empty for a task you can do any time that day."; }
+      else if (e != null && e < s) { hint.hidden = false; hint.textContent = `Runs overnight: ends the next day at ${fmtTime($("tEnd").value)}.`; }
+      else hint.hidden = true;
+
+      const r = readRepeat(), repeats = r.repeat !== "none", ends = $("tEnds").value;
+      $("tDateLab").textContent = repeats ? "Starts" : "Date";
+      $("tEveryWrap").hidden = $("tRepeat").value !== "custom";
+      $("tEndsWrap").hidden = !repeats;
+      $("tUntil").hidden = ends !== "date";
+      $("tCount").hidden = $("tCountLab").hidden = ends !== "count";
+      const rh = $("tRepeatHint");
+      rh.hidden = !repeats || !$("tDate").value || !(r.repeat_every >= 1);
+      if (!rh.hidden) {
+        const preview = { date: $("tDate").value, ...r, repeat_count: null, repeat_until: null };
+        if (ends === "date" && $("tUntil").value) preview.repeat_until = $("tUntil").value;
+        if (ends === "count" && +$("tCount").value >= 2) { preview.repeat_count = Math.round(+$("tCount").value); preview.repeat_until = nthDate(preview, preview.repeat_count); }
+        rh.textContent = repeatLabel(preview, true) + (isNew || !rep ? "" : " Changes apply to every repeat.");
+      }
     };
-    ["tRemind","tStart","tBefore"].forEach(id => $(id).addEventListener("input", sync));
+    ["tRemind","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
+    $("tEnds").addEventListener("change", () => {
+      // pick a sensible last day the first time "On date" is chosen
+      if ($("tEnds").value === "date" && !$("tUntil").value && $("tDate").value) $("tUntil").value = addDays($("tDate").value, 30);
+      sync();
+    });
+    let prevStart = $("tStart").value;
     $("tStart").addEventListener("change", () => {
-      // keep an hour-long slot when the start moves and the end is empty or now before it
-      const s = toMin($("tStart").value), e = toMin($("tEnd").value);
-      if (s != null && (e == null || e <= s)) $("tEnd").value = hhmm(Math.min(s + 60, 23*60 + 59));
+      // moving the start keeps the task's length; a new start with no end gets an hour
+      const s = toMin($("tStart").value), e = toMin($("tEnd").value), p = toMin(prevStart);
+      if (s != null) {
+        if (e == null) $("tEnd").value = hhmm((s + 60) % 1440);
+        else if (p != null) $("tEnd").value = hhmm((s + ((((e - p) % 1440) + 1440) % 1440 || 60)) % 1440);
+      }
+      prevStart = $("tStart").value;
+      sync();
     });
     $("tNoteBtn").onclick = () => { $("tNoteBtn").hidden = true; $("tNoteWrap").hidden = false; $("tDesc").focus(); };
     sync();
 
     $("tCancel").onclick = () => dlg.close();
+    const fail = e => { $("tErr").textContent = navigator.onLine ? e.message : "You're offline. Try again when connected."; };
     if (!isNew) {
       $("tDel").onclick = async () => {
         if ($("tDel").dataset.armed !== "1") { $("tDel").dataset.armed = "1"; $("tDel").textContent = "Tap again to delete"; return; }
-        try { await deleteTask(t.id); dlg.close(); toast("Task deleted"); }
-        catch(e){ $("tErr").textContent = navigator.onLine ? e.message : "You're offline. Try again when connected."; }
+        try { await deleteTask(t.id); dlg.close(); toast(rep ? "All repeats deleted" : "Task deleted"); }
+        catch(e){ fail(e); }
+      };
+      if ($("tSkip")) $("tSkip").onclick = async () => {
+        try { await saveTask({ ...t, skip_dates: [...new Set([...(t.skip_dates || []), occK])].sort() }); dlg.close(); toast(`Removed ${shortDate(occK)}`); }
+        catch(e){ fail(e); }
       };
     }
     $("taskForm").onsubmit = async e => {
       e.preventDefault();
+      const err = m => { $("tErr").textContent = m; };
       const title = $("tTitle").value.trim();
-      if (!title) { $("tErr").textContent = "Give the task a title."; $("tTitle").focus(); return; }
-      if (!$("tDate").value) { $("tErr").textContent = "Pick a date."; return; }
+      if (!title) { err("Give the task a title."); $("tTitle").focus(); return; }
+      const date = $("tDate").value;
+      if (!date) { err("Pick a date."); return; }
       const s = $("tStart").value, en = $("tEnd").value;
-      if (!s && en) { $("tErr").textContent = "Add a start time, or clear the end time."; return; }
-      if (s && en && toMin(en) <= toMin(s)) { $("tErr").textContent = "End time must be after the start time."; return; }
+      if (!s && en) { err("Add a start time, or clear the end time."); return; }
+      if (s && en && toMin(en) === toMin(s)) { err("End time can't be the same as the start time."); return; }
       const before = $("tBefore").value === "custom" ? Math.round(+$("tCustom").value) : +$("tBefore").value;
-      if (!(before >= 0 && before <= 10080)) { $("tErr").textContent = "Reminder must be between 0 and 10080 minutes before."; return; }
+      if (!(before >= 0 && before <= 10080)) { err("Reminder must be between 0 and 10080 minutes before."); return; }
+
+      const r = readRepeat(), repeats = r.repeat !== "none";
+      let repeat_until = null, repeat_count = null;
+      if (repeats) {
+        if (!(r.repeat_every >= 1 && r.repeat_every <= 99)) { err("Repeat every 1 to 99."); return; }
+        if ($("tEnds").value === "date") {
+          repeat_until = $("tUntil").value;
+          if (!repeat_until || repeat_until < date) { err("The last day must be on or after the start date."); return; }
+        }
+        if ($("tEnds").value === "count") {
+          repeat_count = Math.round(+$("tCount").value);
+          if (!(repeat_count >= 2 && repeat_count <= 500)) { err("Repeat between 2 and 500 times."); return; }
+          repeat_until = nthDate({ date, ...r }, repeat_count);
+        }
+      }
+      // done: one flag for a one-off task, a list of ticked days for a repeating one
+      const doneChecked = !isNew && $("tDone").checked;
+      let done_dates = rep && repeats ? [...(t.done_dates || [])] : [];
+      if (repeats && !isNew) { done_dates = done_dates.filter(k => k !== occK); if (doneChecked) done_dates.push(occK); }
+
       $("tSave").disabled = true; $("tSave").textContent = "Saving…";
       try {
-        const saved = await saveTask({ id: t.id, title, description: $("tDesc").value.trim(), date: $("tDate").value,
+        const saved = await saveTask({ id: t.id, title, description: $("tDesc").value.trim(), date,
           start_time: s || null, end_time: en || null, remind: $("tRemind").checked, remind_before: before,
-          done: isNew ? false : $("tDone").checked });
+          done: !repeats && doneChecked, ...r, repeat_until, repeat_count, done_dates: done_dates.sort(),
+          skip_dates: rep && repeats ? (t.skip_dates || []) : [] });
         dlg.close();
-        toast(saved.date !== t.date ? `Saved on ${saved.date}` : isNew ? "Task added" : "Task saved");
-      } catch(err) {
-        $("tErr").textContent = navigator.onLine ? "Couldn't save: " + err.message : "You're offline. Try again when connected.";
+        toast(saved.date !== t.date ? `Saved on ${shortDate(saved.date)}` : isNew ? (repeats ? "Repeating task added" : "Task added") : "Task saved");
+      } catch(e2) {
+        fail(e2);
         $("tSave").disabled = false; $("tSave").textContent = isNew ? "Add task" : "Save changes";
       }
     };

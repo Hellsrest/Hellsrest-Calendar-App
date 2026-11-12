@@ -265,8 +265,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
   .brand h1{font-size:1.7rem;white-space:nowrap}
   #yearCtl{border:0;background:none;padding:0;position:relative}
   #yPrev,#yNext,#todayBtn{display:none}
-  #yearSel{background:none;color:var(--ink);border:1px solid var(--line);font-size:.88rem;font-weight:700;padding:.22rem 1.45rem .22rem .65rem;border-radius:999px}
-  #yearCtl::after{content:"▾";position:absolute;right:.55rem;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--muted);pointer-events:none}
+  #yearSel{background:none;color:var(--muted);border:0;font-size:1.15rem;font-weight:700;padding:0 .2rem;border-radius:6px;-webkit-appearance:none;appearance:none}
   .controls{flex:none}
   #acctBtn{padding:0;border:0;background:none;min-width:34px;min-height:34px}
   #acctBtn .acct-l{display:none}
@@ -1074,7 +1073,6 @@ function setView(v){
   state.view = v;
   document.body.dataset.view = v;
   ["month","year","convert"].forEach(n=>{ $("view-"+n).hidden = n!==v; $("tab-"+n).setAttribute("aria-current", n===v); });
-  $("yearCtl").hidden = v==="convert";
   try{ history.replaceState(null,"", v==="month" ? location.pathname : "#"+v); }catch(e){}
   render();
 }

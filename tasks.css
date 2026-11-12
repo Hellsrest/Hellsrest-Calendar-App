@@ -204,3 +204,16 @@ dialog.sheet{width:min(480px,calc(100vw - 24px))}
 }
 @keyframes sheetUp{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion:reduce){ dialog.sheet[open]{animation:none} }
+
+/* ---------- repeating + overnight tasks ---------- */
+.sh-row > span .ico{margin-right:6px;vertical-align:-1px}
+.sh-pair{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;flex-wrap:wrap}
+.sh-pair input[type=number]{width:3.6rem;text-align:right}
+.sh-pair select{text-align:right;cursor:pointer}
+.sh-pair select option,#tRepeat option{background:var(--sheet);color:var(--ink)}
+.sh-pair em{font-style:normal;font-weight:600;color:var(--muted)}
+#tRepeat{text-align:right;cursor:pointer}
+.sh-delrow{display:flex;justify-content:center;flex-wrap:wrap;gap:4px 8px}
+.ag-main small .ico{width:12px;height:12px;margin-right:4px;vertical-align:-2px}
+.tblock b .ico,.tchip .ico{width:12px;height:12px;margin-right:4px;vertical-align:-1px}
+.up-meta .ico + .ico{margin-left:6px}
