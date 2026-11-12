@@ -50,9 +50,16 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .btn{border:1px solid var(--line);background:var(--sheet);border-radius:999px;padding:.35rem .9rem;font-weight:500}
 .btn:hover{border-color:var(--muted)}
 
-.next{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;background:var(--gold-soft);border:1px solid color-mix(in srgb,var(--gold) 35%,transparent);border-radius:10px;padding:.55rem .9rem;margin-bottom:14px;font-size:.93rem}
-.next b{color:var(--gold)}
-.next .cd{font-variant-numeric:tabular-nums;font-weight:700}
+/* day card (top): selected day + next holiday */
+.dayhead{background:var(--sheet);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:14px 18px;margin-bottom:14px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 28px;align-items:start}
+.dayhead h3{margin:0 0 6px;font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.dayhead .list li{padding:4px 0}
+.dayhead .empty{margin:0}
+.nexth{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;background:var(--gold-soft);border:1px solid color-mix(in srgb,var(--gold) 35%,transparent);border-radius:10px;padding:.5rem .85rem;font-size:.93rem;cursor:pointer}
+.nexth b{color:var(--gold)}
+.nexth .cd{font-variant-numeric:tabular-nums;font-weight:700}
+.nexth:hover b{text-decoration:underline}
+@media (max-width:620px){ .dayhead{grid-template-columns:minmax(0,1fr)} }
 
 /* month chips */
 .chips{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-bottom:14px}
@@ -108,10 +115,9 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .side{display:flex;flex-direction:column;gap:14px;min-width:0}
 .panel{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 .panel h3{margin:0 0 8px;font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
-.detail .big{font-family:var(--display);font-size:1.5rem;line-height:1.1}
-.detail .bsfull{color:var(--crimson);font-weight:600;margin-top:2px}
-.detail .bsrom{color:var(--muted);font-size:.85rem}
-.detail ul{margin:10px 0 0}
+.dayhead .big{font-family:var(--display);font-size:1.6rem;line-height:1.1}
+.dayhead .bsfull{color:var(--crimson);font-weight:600;margin-top:2px}
+.dayhead .bsrom{color:var(--muted);font-size:.85rem}
 .list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .list li{display:grid;grid-template-columns:44px 1fr;gap:10px;padding:8px 0;border-top:1px solid var(--line);cursor:pointer}
 .list li:first-child{border-top:0}
@@ -256,7 +262,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
     </div>
   </header>
 
-  <div class="next" id="next" hidden></div>
+  <section class="dayhead" id="detail" aria-live="polite"></section>
 
   <section id="view-month">
     <nav class="chips" id="chips" aria-label="Months"></nav>
@@ -278,20 +284,9 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
       </section>
 
       <aside class="side">
-        <div class="panel detail" id="detail"></div>
         <div class="panel">
           <h3 id="listTitle">Holidays this month</h3>
           <ul class="list" id="list"></ul>
-        </div>
-        <div class="panel">
-          <h3>Key</h3>
-          <div class="legend">
-            <div><span class="sw public"></span>Public holiday (incl. Dashain &amp; Tihar)</div>
-            <div><span class="sw limited"></span>Holiday for some groups or areas</div>
-            <div><span class="sw sat"></span>Saturday &amp; Sunday (weekly holidays)</div>
-            <div><span class="tag est">est.</span>Expected date; no government list yet</div>
-          </div>
-          <p class="note">Holidays up to Chaitra 2083 (Apr 13, 2027) follow the government lists. Later dates come from published patro data, and for mid-2030 from lunar calculation, so they may shift by a day.</p>
         </div>
       </aside>
     </div>
@@ -1025,6 +1020,7 @@ function render(){
   $("yNext").disabled = y===Y1;
   if(state.view==="month") renderMonth();
   if(state.view==="year") renderYear();
+  renderDetail();
 }
 
 // ---------- month view ----------
@@ -1076,10 +1072,9 @@ function renderMonth(){
     return `<li data-k="${k}"><div class="dt"><b>${dd}</b><small>${wd}</small></div>
       <div><div class="nm">${h.n}</div>
       <div class="sub">${h.np} · ${BS_MONTHS_NP[b.m]} ${np(b.d)}</div>
-      <div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est">est.</span>`:""}</div></div></li>`;
+      <div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est" title="Expected date; no government list yet">est.</span>`:""}</div></div></li>`;
   })).join("") : `<li style="cursor:default"><p class="empty" style="grid-column:1/-1">No holidays this month apart from weekends.</p></li>`;
 
-  renderDetail();
 }
 
 function renderDetail(){
@@ -1087,12 +1082,31 @@ function renderDetail(){
   const b = toBS(y,m,d), hs = byDate[k]||[];
   const wd = new Date(y,m,d);
   const wdName = wd.toLocaleDateString("en-GB",{weekday:"long"});
-  $("detail").innerHTML = `<h3>${k===TODAY?"Today":"Selected day"}</h3>
-    <div class="big">${wdName}, ${MON[m]} ${d}, ${y}</div>
-    <div class="bsfull">${bsLabel(b)} · ${WEEKDAY_NP[wd.getDay()]}</div>
-    <div class="bsrom">${BS_MONTHS[b.m]} ${b.d}, ${b.y} BS</div>
-    ${hs.length?`<ul class="list" style="margin-top:8px">${hs.map(h=>`<li style="cursor:default;grid-template-columns:1fr"><div><div class="nm">${h.n}</div><div class="sub">${h.np}</div><div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est">est.</span>`:""}</div></div></li>`).join("")}</ul>`
-      : `<p class="empty" style="margin-top:8px">${wd.getDay()===6?"Saturday, weekly holiday.":wd.getDay()===0?"Sunday, weekly holiday.":"Regular working day."}</p>`}`;
+  $("detail").innerHTML = `<div>
+      <h3>${k===TODAY?"Today":"Selected day"}</h3>
+      <div class="big">${wdName}, ${MON[m]} ${d}, ${y}</div>
+      <div class="bsfull">${bsLabel(b)} · ${WEEKDAY_NP[wd.getDay()]}</div>
+      <div class="bsrom">${BS_MONTHS[b.m]} ${b.d}, ${b.y} BS</div>
+    </div>
+    <div>
+      <h3>${hs.length?"On this day":"Day type"}</h3>
+      ${hs.length?`<ul class="list">${hs.map(h=>`<li style="cursor:default;grid-template-columns:1fr"><div><div class="nm">${h.n}</div><div class="sub">${h.np}</div><div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est" title="Expected date; no government list yet">est.</span>`:""}</div></div></li>`).join("")}</ul>`
+        : `<p class="empty">${wd.getDay()===6?"Saturday, weekly holiday.":wd.getDay()===0?"Sunday, weekly holiday.":"Regular working day."}</p>`}
+    </div>
+    ${nextHolidayHTML(k)}`;
+  const nx = $("detail").querySelector(".nexth");
+  if(nx){ nx.onclick = ()=>go(nx.dataset.k); nx.onkeydown = e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); go(nx.dataset.k); } }; }
+}
+
+// next public holiday after the given day
+function nextHolidayHTML(from){
+  const up = Object.keys(byDate).filter(k=>k>from && byDate[k].some(h=>h.t==="public")).sort()[0];
+  if(!up) return "";
+  const h = byDate[up].find(h=>h.t==="public");
+  const [y,m,d] = up.split("-").map(Number), [fy,fm,fd] = from.split("-").map(Number);
+  const diff = Math.round((Date.UTC(y,m-1,d)-Date.UTC(fy,fm-1,fd))/864e5);
+  const b = toBS(y,m-1,d);
+  return `<div class="nexth" data-k="${up}" role="button" tabindex="0"><span>Next holiday</span><b>${h.n}</b><span>${MON[m-1]} ${d} · ${bsLabel(b)}</span><span class="cd">${diff===1?(from===TODAY?"Tomorrow":"Next day"):`in ${diff} days`}</span></div>`;
 }
 
 // ---------- year view ----------
@@ -1146,7 +1160,7 @@ function renderYear(){
     const ks = yearKeys.filter(k=>+k.slice(5,7)===m+1 && byDate[k].some(h=>h.t!=="obs"));
     if(!ks.length) return "";
     return `<div class="ym"><h4>${mn}</h4><ul>${ks.map(k=>{const h=byDate[k].find(h=>h.t!=="obs"); const d=+k.slice(8);
-      return `<li data-k="${k}" class="${h.t}"><span class="d">${d}</span><span>${h.n}${h.est?' <span class="tag est">est.</span>':""}</span></li>`;}).join("")}</ul></div>`;
+      return `<li data-k="${k}" class="${h.t}"><span class="d">${d}</span><span>${h.n}${h.est?' <span class="tag est" title="Expected date; no government list yet">est.</span>':""}</span></li>`;}).join("")}</ul></div>`;
   }).join("");
 }
 
@@ -1202,21 +1216,6 @@ cv.aD.addEventListener("change",convA);
 $("cvToday").onclick = initConverter;
 $("view-convert").addEventListener("click",e=>{const b=e.target.closest("button[data-k]"); if(b) go(b.dataset.k);});
 
-// ---------- next holiday banner ----------
-function renderNext(){
-  if(!inRange) return;
-  const up = Object.keys(byDate).filter(k=>k>=TODAY && byDate[k].some(h=>h.t==="public")).sort()[0];
-  if(!up) return;
-  const h = byDate[up].find(h=>h.t==="public");
-  const [y,m,d] = up.split("-").map(Number);
-  const diff = Math.round((Date.UTC(y,m-1,d)-Date.UTC(now.getFullYear(),now.getMonth(),now.getDate()))/864e5);
-  const b = toBS(y,m-1,d);
-  $("next").hidden = false;
-  $("next").innerHTML = `<span>Next holiday</span><b>${h.n}</b><span>${MON[m-1]} ${d} · ${bsLabel(b)}</span><span class="cd">${diff===0?"Today":diff===1?"Tomorrow":`in ${diff} days`}</span>`;
-  $("next").style.cursor="pointer";
-  $("next").onclick = ()=>go(up);
-}
-
 function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); }
 
 // ---------- events ----------
@@ -1246,7 +1245,6 @@ document.addEventListener("keydown",e=>{
   }
 });
 
-renderNext();
 initConverter();
 const startView = ({"#year":"year","#convert":"convert"})[location.hash] || "month";
 setView(startView);
