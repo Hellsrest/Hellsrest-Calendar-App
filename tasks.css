@@ -217,3 +217,11 @@ dialog.sheet{width:min(480px,calc(100vw - 24px))}
 .ag-main small .ico{width:12px;height:12px;margin-right:4px;vertical-align:-2px}
 .tblock b .ico,.tchip .ico{width:12px;height:12px;margin-right:4px;vertical-align:-1px}
 .up-meta .ico + .ico{margin-left:6px}
+
+/* ---------- alarms + snooze setting ---------- */
+#tAlarmRow .toggle span{display:inline-flex;align-items:center;gap:6px;font-size:.95rem;font-weight:600;color:var(--ink)}
+.acct-snooze{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:.4rem 0 .2rem;min-height:40px}
+.acct-min{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--muted)}
+.acct-min input{width:4rem;font:inherit;font-weight:700;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:.3rem .5rem;text-align:right}
+.acct-test{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:.6rem;font-size:.9rem;color:var(--muted)}
+.acct-note{margin:.4rem 0 0;font-size:.82rem}

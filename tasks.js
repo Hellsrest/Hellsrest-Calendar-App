@@ -21,7 +21,9 @@
   const mqList = matchMedia("(max-width:900px)"); // agenda list instead of timeline
 
   let user = null;
-  let settings = { default_remind_before: 15 };
+  let settings = { default_remind_before: 15, snooze_enabled: false, snooze_minutes: 5 };
+  let loaded = false;        // tasks came from the cache or the server (so the phone schedule is trustworthy)
+  const native = window.PatroNative || null; // set by the Android app; null in a browser
   let tasks = [];            // all of the user's task rows
   let oneOff = {};           // "YYYY-MM-DD" -> non-repeating rows starting that day
   let repeating = [];        // repeating rows
@@ -44,6 +46,16 @@
   const overnight = t => { const s = toMin(t.start_time), e = toMin(t.end_time); return s != null && e != null && e < s; };
   const bell = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
   const loop = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const clock = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 9.5V13l2.5 2M4 5.5 7 3M20 5.5 17 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  // what the phone does for a task, in words ("Notification 15 min before and alarm at 4:00 pm.")
+  function alertSummary(t){
+    if (!t.start_time) return t.remind ? "Notification at 9 am that day." : "No notification.";
+    const at = fmtTime(t.start_time), parts = [];
+    if (t.remind && t.remind_before > 0) parts.push(`notification ${remindLabel(t.remind_before)}`);
+    parts.push(t.alarm ? `alarm rings at ${at}` : `notification at ${at}`);
+    const s = parts.join(" and ");
+    return s[0].toUpperCase() + s.slice(1) + ".";
+  }
 
   function toast(msg){
     let t = document.querySelector(".toast");
@@ -135,7 +147,51 @@
 
   function saveCache(){ try { localStorage.setItem(CACHE_KEY, JSON.stringify({ uid: user?.id, tasks })); } catch(e){} }
   function loadCache(uid){
-    try { const c = JSON.parse(localStorage.getItem(CACHE_KEY)); if (c && c.uid === uid) { tasks = c.tasks || []; index(); } } catch(e){}
+    try { const c = JSON.parse(localStorage.getItem(CACHE_KEY)); if (c && c.uid === uid) { tasks = c.tasks || []; index(); loaded = true; } } catch(e){}
+  }
+
+  // ---------- phone notifications & alarms (Android app only) ----------
+  // The page works out every notification/alarm for the next weeks and hands the list to the app,
+  // which sets them with Android's alarm service (they fire even when the app is closed).
+  //   Remind on  + alarm off: notification before + notification at start
+  //   Remind off + alarm off: notification at start
+  //   Remind off + alarm on : alarm at start
+  //   Remind on  + alarm on : notification before + alarm at start
+  const SCHEDULE_DAYS = 35, SCHEDULE_MAX = 250;
+  function buildSchedule(){
+    const out = [], now = Date.now(), today = todayKey();
+    for (let i = 0; i <= SCHEDULE_DAYS; i++) {
+      const k = addDays(today, i);
+      for (const o of dayList(k)) {
+        if (o.cont || o.done) continue;
+        const t = o.t;
+        const add = (at, kind, text, tag) => { if (at > now) out.push({ id: `${t.id}|${k}|${tag}`, at, kind, title: t.title, text, day: k }); };
+        if (!t.start_time) {
+          if (t.remind) add(new Date(`${k}T${UNTIMED_REMIND_AT}:00`).getTime(), "notify", "Today · any time", "start");
+          continue;
+        }
+        const span = `${fmtTime(t.start_time)}${t.end_time ? ` – ${fmtTime(t.end_time)}` : ""}`;
+        const start = new Date(`${k}T${t.start_time.slice(0,5)}:00`).getTime();
+        if (t.remind && t.remind_before > 0) add(start - t.remind_before * 60000, "notify", `In ${relMin(t.remind_before)} · ${span}`, "before");
+        if (t.alarm) add(start, "alarm", span, "alarm");
+        else add(start, "notify", `Starting now · ${span}`, "start");
+      }
+    }
+    out.sort((a,b) => a.at - b.at);
+    return out.slice(0, SCHEDULE_MAX);
+  }
+  let lastSchedule = null;
+  function syncPhone(){
+    if (!native) return;
+    if (user && !loaded) return;           // don't wipe the phone's alarms before the tasks are known
+    const json = JSON.stringify(user ? buildSchedule() : []);
+    if (json === lastSchedule) return;
+    lastSchedule = json;
+    try { native.setSchedule(json); } catch(e){}
+  }
+  function syncPhoneSettings(){
+    if (!native) return;
+    try { native.setSettings(JSON.stringify({ snooze_enabled: !!settings.snooze_enabled, snooze_minutes: settings.snooze_minutes || 5 })); } catch(e){}
   }
 
   async function fetchAll(){
@@ -146,11 +202,12 @@
       if (error) { if (navigator.onLine) toast("Couldn't load tasks: " + error.message); return; }
       all.push(...data); if (data.length < page) break;
     }
-    tasks = all; index(); saveCache(); refresh();
+    tasks = all; loaded = true; index(); saveCache(); refresh();
   }
   async function fetchSettings(){
     const { data } = await sb.from("user_settings").select("*").maybeSingle();
-    if (data) settings = data;
+    if (data) settings = { ...settings, ...data };
+    syncPhoneSettings();
   }
 
   // when the next reminder fires (for a repeating task: the next repeat that isn't done yet)
@@ -166,13 +223,14 @@
     return null;
   }
 
-  const dbHint = msg => /repeat|done_dates|skip_dates|column/i.test(msg)
+  const dbHint = msg => /repeat|done_dates|skip_dates|alarm|snooze|column/i.test(msg)
     ? "The database needs a small update: run supabase/schema.sql again in Supabase (SQL Editor)." : msg;
 
   async function saveTask(t){
     const rep = isRep(t) ? t.repeat : "none";
     const row = { date: t.date, start_time: t.start_time || null, end_time: t.start_time ? (t.end_time || null) : null,
       title: t.title, description: t.description || null, done: rep === "none" && !!t.done, remind: !!t.remind,
+      alarm: !!t.alarm && !!t.start_time,
       remind_before: t.remind_before ?? settings.default_remind_before,
       repeat: rep, repeat_every: rep === "none" ? 1 : (t.repeat_every || 1),
       repeat_until: rep === "none" ? null : (t.repeat_until || null),
@@ -257,7 +315,7 @@
       const cls = ["up-card", o.done ? "done" : "", past && !o.done ? "past" : "", now && !o.done ? "now" : "", i === fi ? "focus" : ""].filter(Boolean).join(" ");
       const time = o.cont ? `Until ${fmtTime(t.end_time)}` : o.s != null ? fmtTime(t.start_time) : "Any time";
       const meta = o.done ? "Done"
-        : `${t.remind && !o.cont ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}${isRep(t) ? loop : ""}`;
+        : `${t.remind && !o.cont ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}${t.alarm && !o.cont ? clock : ""}${isRep(t) ? loop : ""}`;
       return `<button class="${cls}" data-id="${t.id}" data-k="${o.k}" type="button">
         <span class="up-time">${time}${now && !o.done ? `<em>Now</em>` : ""}</span>
         <span class="up-title">${esc(t.title)}</span>
@@ -364,7 +422,7 @@
           ${check(o)}
           <span class="ag-time">${time}</span>
           <span class="ag-main"><b>${esc(t.title)}</b>${sub ? `<small>${isRep(t) ? loop : ""}${sub}</small>` : ""}</span>
-          ${t.remind && !o.done && !o.cont ? `<span class="ag-bell" title="Reminder ${t.start_time ? remindLabel(t.remind_before) : "at 9 am"}">${bell}</span>` : ""}
+          ${(t.remind || t.alarm) && !o.done && !o.cont ? `<span class="ag-bell" title="${esc(alertSummary(t))}">${t.alarm ? clock : bell}</span>` : ""}
         </div>`;
       }
       html += `</div>`;
@@ -487,7 +545,8 @@
           <select id="tBefore" aria-label="When to remind">${REMIND_CHOICES.map(([v,l]) => `<option value="${v}">${l}</option>`).join("")}</select>
         </div>
         <label class="sh-row" id="tCustomWrap" hidden><span>Minutes before</span><input type="number" id="tCustom" min="0" max="10080" step="1" value="${rb}"></label>
-        <p class="sh-hint" id="tRemindHint" hidden>No start time, so the reminder comes at 9 am.</p>
+        <div class="sh-row" id="tAlarmRow"><label class="toggle"><input type="checkbox" id="tAlarm" ${t.alarm ? "checked" : ""}><span>${clock}Alarm at start</span></label></div>
+        <p class="sh-hint" id="tAlertHint"></p>
         <button type="button" class="linkbtn sh-notebtn" id="tNoteBtn" ${t.description ? "hidden" : ""}>+ Add note</button>
         <label class="sh-note" id="tNoteWrap" ${t.description ? "" : "hidden"}><span>Note</span><textarea id="tDesc" rows="3">${esc(t.description)}</textarea></label>
         ${isNew ? "" : `<label class="toggle sh-done"><input type="checkbox" id="tDone" ${doneNow ? "checked" : ""}><span>${rep ? `Done on ${shortDate(occK)}` : "Done"}</span></label>`}
@@ -516,7 +575,10 @@
       const on = $("tRemind").checked, timed = !!$("tStart").value;
       $("tBefore").hidden = !on || !timed;
       $("tCustomWrap").hidden = !on || !timed || $("tBefore").value !== "custom";
-      $("tRemindHint").hidden = !on || timed;
+      $("tAlarmRow").hidden = !timed;
+      const before = $("tBefore").value === "custom" ? Math.round(+$("tCustom").value) : +$("tBefore").value;
+      $("tAlertHint").textContent = alertSummary({ start_time: $("tStart").value, remind: on, remind_before: before, alarm: $("tAlarm").checked })
+        + (native ? "" : " (on your phone, in the Patro app)");
       const s = toMin($("tStart").value), e = toMin($("tEnd").value), hint = $("tTimeHint");
       if (s == null) { hint.hidden = false; hint.textContent = "Leave Start empty for a task you can do any time that day."; }
       else if (e != null && e < s) { hint.hidden = false; hint.textContent = `Runs overnight: ends the next day at ${fmtTime($("tEnd").value)}.`; }
@@ -537,7 +599,7 @@
         rh.textContent = repeatLabel(preview, true) + (isNew || !rep ? "" : " Changes apply to every repeat.");
       }
     };
-    ["tRemind","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
+    ["tRemind","tAlarm","tCustom","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
     $("tEnds").addEventListener("change", () => {
       // pick a sensible last day the first time "On date" is chosen
       if ($("tEnds").value === "date" && !$("tUntil").value && $("tDate").value) $("tUntil").value = addDays($("tDate").value, 30);
@@ -606,6 +668,7 @@
       try {
         const saved = await saveTask({ id: t.id, title, description: $("tDesc").value.trim(), date,
           start_time: s || null, end_time: en || null, remind: $("tRemind").checked, remind_before: before,
+          alarm: !!s && $("tAlarm").checked,
           done: !repeats && doneChecked, ...r, repeat_until, repeat_count, done_dates: done_dates.sort(),
           skip_dates: rep && repeats ? (t.skip_dates || []) : [] });
         dlg.close();
@@ -627,17 +690,34 @@
       dlg.innerHTML = `<form method="dialog" class="dlg-in" id="acctForm">
         <h2>Account</h2><p class="dlg-sub">Signed in as ${esc(user.email)}</p>
         <label class="fld">Default reminder for new tasks<select id="sDefault">${REMIND_CHOICES.filter(c => c[0] !== "custom").map(([v,l]) => `<option value="${v}" ${v===rb?"selected":""}>${l}</option>`).join("")}${REMIND_CHOICES.some(c=>c[0]===rb)?"":`<option value="${rb}" selected>${rb} min before</option>`}</select></label>
+        <div class="acct-snooze">
+          <label class="toggle"><input type="checkbox" id="sSnooze" ${settings.snooze_enabled ? "checked" : ""}><span>Snooze button on alarms</span></label>
+          <label class="acct-min" id="sSnoozeWrap" ${settings.snooze_enabled ? "" : "hidden"}><input type="number" id="sSnoozeMin" min="1" max="60" step="1" value="${settings.snooze_minutes || 5}" aria-label="Snooze minutes"> min</label>
+        </div>
+        ${native ? `<div class="acct-test"><span>Try it on this phone:</span>
+          <button type="button" class="btn ghost sm" id="aTestN">Notification</button>
+          <button type="button" class="btn ghost sm" id="aTestA">Alarm</button></div>
+          <p class="dlg-sub acct-note">Both arrive in 10 seconds, even if you close the app.</p>`
+        : `<p class="dlg-sub acct-note">Notifications and alarms ring on your phone through the Patro app.</p>`}
         <p class="err" id="aErr"></p>
         <div class="dlg-foot"><button type="button" class="btn danger" id="aOut">Sign out</button><span class="sp"></span>
           <button type="button" class="btn ghost" id="aClose">Close</button><button type="submit" class="btn primary">Save</button></div></form>`;
       $("aClose").onclick = () => dlg.close();
       $("aOut").onclick = async () => { await sb.auth.signOut(); dlg.close(); toast("Signed out"); };
+      $("sSnooze").onchange = () => { $("sSnoozeWrap").hidden = !$("sSnooze").checked; };
+      if (native) {
+        const test = kind => { try { native.test(kind, JSON.stringify({ snooze_enabled: $("sSnooze").checked, snooze_minutes: Math.round(+$("sSnoozeMin").value) || 5 })); toast(kind === "alarm" ? "Alarm rings in 10 seconds" : "Notification in 10 seconds"); } catch(e){} };
+        $("aTestN").onclick = () => test("notify");
+        $("aTestA").onclick = () => test("alarm");
+      }
       $("acctForm").onsubmit = async e => {
         e.preventDefault();
-        const v = +$("sDefault").value;
-        const { data, error } = await sb.from("user_settings").upsert({ user_id: user.id, default_remind_before: v }).select().single();
-        if (error) { $("aErr").textContent = error.message; return; }
-        settings = data; dlg.close(); toast("Default reminder saved");
+        const v = +$("sDefault").value, mins = Math.round(+$("sSnoozeMin").value);
+        if (!(mins >= 1 && mins <= 60)) { $("aErr").textContent = "Snooze must be 1 to 60 minutes."; return; }
+        const { data, error } = await sb.from("user_settings").upsert({ user_id: user.id, default_remind_before: v,
+          snooze_enabled: $("sSnooze").checked, snooze_minutes: mins }).select().single();
+        if (error) { $("aErr").textContent = dbHint(error.message); return; }
+        settings = { ...settings, ...data }; syncPhoneSettings(); dlg.close(); toast("Settings saved");
       };
     } else {
       let mode = "in";
@@ -680,11 +760,19 @@
   }
 
   // ---------- glue ----------
-  function refresh(){ decorateMonth(); renderStrip(true); renderDay(false); }
+  function refresh(){ decorateMonth(); renderStrip(true); renderDay(false); syncPhone(); }
 
   window.Tasks = {
     open: showDay,
     close: closeDay,
+    // used by the Android app when a notification is tapped
+    openDate(k){
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+      const [y,m] = parts(k);
+      state.sel = k; state.y = y; state.m = m - 1;
+      if (state.view !== "month") setView("month"); else render();
+      showDay(k);
+    },
     afterRender(){
       decorateMonth(); renderStrip(false);
       if (openDay && openDay !== state.sel && state.view === "month") { openDay = state.sel; renderDay(true); }
@@ -701,7 +789,7 @@
       user = session?.user || null;
       drawAcctBtn();
       if (user && user.id !== was) { loadCache(user.id); refresh(); setTimeout(() => { fetchSettings(); fetchAll(); }, 0); }
-      if (!user) { tasks = []; index(); refresh(); }
+      if (!user) { tasks = []; loaded = false; index(); refresh(); }
     });
     document.addEventListener("visibilitychange", () => { if (!document.hidden && user) fetchAll(); });
   } else {

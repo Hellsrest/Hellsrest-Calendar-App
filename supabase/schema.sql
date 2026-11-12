@@ -77,3 +77,11 @@ do $$ begin
   alter table public.tasks add constraint tasks_repeat_ok
     check (repeat in ('none','daily','weekly','monthly','yearly') and repeat_every between 1 and 99);
 exception when duplicate_object then null; end $$;
+
+-- ---------- phone alarms + snooze (added later; safe to re-run) ----------
+alter table public.tasks         add column if not exists alarm          boolean not null default false;
+alter table public.user_settings add column if not exists snooze_enabled boolean not null default false;
+alter table public.user_settings add column if not exists snooze_minutes integer not null default 5;
+do $$ begin
+  alter table public.user_settings add constraint user_settings_snooze_ok check (snooze_minutes between 1 and 60);
+exception when duplicate_object then null; end $$;
