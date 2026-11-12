@@ -10,7 +10,23 @@
   const SB_URL = "https://usipczocwwortembguqf.supabase.co";
   // Publishable key: safe to ship in the page. Row level security limits every user to their own rows.
   const SB_KEY = "sb_publishable_IMcvneTU3cMrTDw4rSlJOg_ixtC0-Ea";
-  const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true } }) : null;
+  // In the Android app the sign-in is kept by the app itself (not the page), so its background sync
+  // and this page share one session. Supabase replaces the refresh token every time it is used;
+  // two separate copies would sign each other out.
+  const appStore = window.PatroNative && window.PatroNative.authGet ? (() => {
+    const N = window.PatroNative;
+    const ls = (f) => { try { return f(); } catch(e) { return null; } };
+    return {
+      getItem(k){
+        let v = N.authGet(k);
+        if (v == null || v === "") { v = ls(() => localStorage.getItem(k)); if (v != null) N.authSet(k, v); }   // move an older sign-in over
+        return v ?? null;
+      },
+      setItem(k, v){ N.authSet(k, v); ls(() => localStorage.removeItem(k)); },
+      removeItem(k){ N.authRemove(k); ls(() => localStorage.removeItem(k)); },
+    };
+  })() : undefined;
+  const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, ...(appStore ? { storage: appStore } : {}) } }) : null;
 
   const HOUR_PX = 48, PX_PER_MIN = HOUR_PX / 60;
   const UNTIMED_REMIND_AT = "09:00"; // reminders for tasks without a time fire at 9 am that day
@@ -829,6 +845,8 @@
       if (state.view !== "month") setView("month"); else render();
       showDay(k);
     },
+    // the Android app calls this when it comes back to the front
+    resume(){ if (user) { lastSchedule = null; fetchAll(); } },
     afterRender(){
       decorateMonth(); renderStrip(false);
       if (openDay && openDay !== state.sel && state.view === "month") { openDay = state.sel; renderDay(true); }
@@ -847,7 +865,8 @@
       if (user && user.id !== was) { loadCache(user.id); refresh(); setTimeout(() => { fetchSettings(); fetchAll(); }, 0); }
       if (!user) { tasks = []; loaded = false; index(); refresh(); }
     });
-    document.addEventListener("visibilitychange", () => { if (!document.hidden && user) fetchAll(); });
+    // back in view: reload, and resend the phone schedule (background sync may have changed it meanwhile)
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && user) { lastSchedule = null; fetchAll(); } });
   } else {
     drawAcctBtn();
   }
