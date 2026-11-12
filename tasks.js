@@ -535,6 +535,9 @@
     const every = t.repeat_every || 1;
     const repVal = !rep ? "none" : every === 1 ? t.repeat : t.repeat === "weekly" && every === 2 ? "weekly2" : "custom";
     const doneNow = rep ? !!t.done_dates?.includes(occK) : !!t.done;
+    // one Alarm toggle plus when it rings: at the start, at the end, or both
+    const endAlarm = t.end_alert === "alarm", alarmOn = !!t.alarm || endAlarm;
+    const alarmWhen = t.alarm && endAlarm ? "both" : endAlarm ? "end" : "start";
     const dlg = $("taskDlg");
     dlg.classList.add("sheet");
     dlg.innerHTML = `<form method="dialog" class="sh" id="taskForm" novalidate>
@@ -542,6 +545,8 @@
       <div class="sh-top"><h2>${isNew ? "New task" : rep ? "Edit repeating task" : "Edit task"}</h2>
         <button type="button" class="iconbtn" id="tCancel" aria-label="Close">×</button></div>
       <input class="sh-title" id="tTitle" maxlength="200" value="${esc(t.title)}" placeholder="What needs doing?" autocomplete="off" aria-label="Task title">
+      <button type="button" class="linkbtn sh-notebtn" id="tNoteBtn" ${t.description ? "hidden" : ""}>+ Add note</button>
+      <label class="sh-note" id="tNoteWrap" ${t.description ? "" : "hidden"}><span>Note</span><textarea id="tDesc" rows="3">${esc(t.description)}</textarea></label>
       <div class="sh-rows">
         <label class="sh-row"><span id="tDateLab">Date</span><input type="date" id="tDate" value="${t.date}" required></label>
         <div class="sh-row sh-times">
@@ -563,12 +568,11 @@
           <select id="tBefore" aria-label="When to remind">${REMIND_CHOICES.map(([v,l]) => `<option value="${v}">${l}</option>`).join("")}</select>
         </div>
         <label class="sh-row" id="tCustomWrap" hidden><span>Minutes before</span><input type="number" id="tCustom" min="0" max="10080" step="1" value="${rb}"></label>
-        <div class="sh-row" id="tAlarmRow"><label class="toggle"><input type="checkbox" id="tAlarm" ${t.alarm ? "checked" : ""}><span>${clock}Alarm at start</span></label></div>
-        <label class="sh-row" id="tEndRow"><span>${clock}At end</span><select id="tEndAlert" aria-label="At the end time">
-          <option value="none">Nothing</option><option value="notify">Notification</option><option value="alarm">Alarm</option></select></label>
+        <div class="sh-row sh-remind" id="tAlarmRow">
+          <label class="toggle"><input type="checkbox" id="tAlarm" ${alarmOn ? "checked" : ""}><span>${clock}Alarm</span></label>
+          <select id="tAlarmWhen" aria-label="When the alarm rings"><option value="start">At start</option><option value="end">At end</option><option value="both">Both</option></select>
+        </div>
         <p class="sh-hint" id="tAlertHint"></p>
-        <button type="button" class="linkbtn sh-notebtn" id="tNoteBtn" ${t.description ? "hidden" : ""}>+ Add note</button>
-        <label class="sh-note" id="tNoteWrap" ${t.description ? "" : "hidden"}><span>Note</span><textarea id="tDesc" rows="3">${esc(t.description)}</textarea></label>
         ${isNew ? "" : `<label class="toggle sh-done"><input type="checkbox" id="tDone" ${doneNow ? "checked" : ""}><span>${rep ? `Done on ${shortDate(occK)}` : "Done"}</span></label>`}
       </div>
       <p class="err" id="tErr"></p>
@@ -580,7 +584,13 @@
     </form>`;
     $("tBefore").value = preset ? String(rb) : "custom";
     $("tRepeat").value = repVal;
-    $("tEndAlert").value = t.end_alert || "none";
+    $("tAlarmWhen").value = alarmWhen;
+    // what the alarm row means for the start and the end
+    const readAlarm = () => {
+      const on = !!$("tStart").value && $("tAlarm").checked, w = $("tAlarmWhen").value, hasEnd = !!$("tEnd").value;
+      return { alarm: on && (w === "start" || w === "both" || !hasEnd),
+               end_alert: on && hasEnd && (w === "end" || w === "both") ? "alarm" : "none" };
+    };
     $("tUnit").value = rep ? t.repeat : "daily";
     $("tEnds").value = t.repeat_count ? "count" : t.repeat_until ? "date" : "never";
 
@@ -597,9 +607,13 @@
       $("tBefore").hidden = !on || !timed;
       $("tCustomWrap").hidden = !on || !timed || $("tBefore").value !== "custom";
       $("tAlarmRow").hidden = !timed;
-      $("tEndRow").hidden = !timed || !$("tEnd").value;
+      // "At end" and "Both" need an end time
+      const hasEnd = !!$("tEnd").value, sel = $("tAlarmWhen");
+      [...sel.options].forEach(o => { if (o.value !== "start") o.disabled = !hasEnd; });
+      if (!hasEnd) sel.value = "start";
+      sel.hidden = !$("tAlarm").checked;
       const before = $("tBefore").value === "custom" ? Math.round(+$("tCustom").value) : +$("tBefore").value;
-      $("tAlertHint").textContent = alertSummary({ start_time: $("tStart").value, end_time: $("tEnd").value, remind: on, remind_before: before, alarm: $("tAlarm").checked, end_alert: $("tEndAlert").value })
+      $("tAlertHint").textContent = alertSummary({ start_time: $("tStart").value, end_time: $("tEnd").value, remind: on, remind_before: before, ...readAlarm() })
         + (native ? "" : " (on your phone, in the Patro app)");
       const s = toMin($("tStart").value), e = toMin($("tEnd").value), hint = $("tTimeHint");
       if (s == null) { hint.hidden = false; hint.textContent = "Leave Start empty for a task you can do any time that day."; }
@@ -621,7 +635,7 @@
         rh.textContent = repeatLabel(preview, true) + (isNew || !rep ? "" : " Changes apply to every repeat.");
       }
     };
-    ["tRemind","tAlarm","tEndAlert","tCustom","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
+    ["tRemind","tAlarm","tAlarmWhen","tCustom","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
     $("tEnds").addEventListener("change", () => {
       // pick a sensible last day the first time "On date" is chosen
       if ($("tEnds").value === "date" && !$("tUntil").value && $("tDate").value) $("tUntil").value = addDays($("tDate").value, 30);
@@ -690,8 +704,7 @@
       try {
         const saved = await saveTask({ id: t.id, title, description: $("tDesc").value.trim(), date,
           start_time: s || null, end_time: en || null, remind: $("tRemind").checked, remind_before: before,
-          alarm: !!s && $("tAlarm").checked,
-          end_alert: s && en ? $("tEndAlert").value : "none",
+          ...readAlarm(),
           done: !repeats && doneChecked, ...r, repeat_until, repeat_count, done_dates: done_dates.sort(),
           skip_dates: rep && repeats ? (t.skip_dates || []) : [] });
         dlg.close();
