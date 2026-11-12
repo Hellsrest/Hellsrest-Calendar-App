@@ -247,6 +247,62 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .conv-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-top:12px}
 .conv-foot .note{margin:0}
 @media (max-width:760px){ .conv{grid-template-columns:minmax(0,1fr)} }
+
+/* ---------- shared bits ---------- */
+.brand h1 a{color:inherit;text-decoration:none}
+.cell,.md{touch-action:manipulation}
+.md.sel{box-shadow:inset 0 0 0 2px var(--ink)}
+.dh-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:10px}
+.dh-tasks .btn{padding:.3rem .9rem;font-weight:600}
+.dh-tasks .hint{font-size:.78rem;color:var(--muted)}
+.cv-switch{display:none}
+
+/* ---------- phone layout ---------- */
+@media (max-width:620px){
+  .wrap{padding-block:0 32px}
+  /* sticky app bar: title + year on the left, account on the right */
+  .top{position:sticky;top:0;z-index:30;margin:0 -16px 12px;padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
+    background:color-mix(in srgb,var(--paper) 92%,transparent);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);flex-wrap:nowrap;justify-content:space-between;align-items:center;gap:10px}
+  .brand{display:flex;align-items:center;gap:10px;min-width:0}
+  .brand h1{font-size:1.7rem;white-space:nowrap}
+  #yearCtl{border:0;background:none;padding:0;position:relative}
+  #yPrev,#yNext,#todayBtn{display:none}
+  #yearSel{background:none;color:var(--ink);border:1px solid var(--line);font-size:.88rem;font-weight:700;padding:.22rem 1.45rem .22rem .65rem;border-radius:999px}
+  #yearCtl::after{content:"▾";position:absolute;right:.55rem;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--muted);pointer-events:none}
+  .controls{flex:none}
+  #acctBtn{padding:0;border:0;background:none;min-width:34px;min-height:34px}
+  #acctBtn .acct-l{display:none}
+  #acctBtn .av{width:34px;height:34px;font-size:.95rem}
+  .tabs{width:100%;margin-bottom:12px}
+
+  /* compact headings: the body face is narrower than the display face */
+  .sheet-head h2,.dayhead .big,.yhead h2,.ctitle,.dp-date,.dlg-in h2,.mini-h span,.res-big{font-family:var(--body);font-weight:700;letter-spacing:-.01em}
+  .dayhead .big{font-size:1.45rem}
+
+  /* month: no month chips, BS months on their own lines */
+  #view-month .chips{display:none}
+  .bs-sep{display:none}
+  .bs-np,.bs-en{display:block}
+  .bs-en{font-size:.85rem}
+
+  /* year and converter: no day card */
+  body[data-view="year"] .dayhead,body[data-view="convert"] .dayhead{display:none}
+
+  /* year: two stats side by side in one card, no colour key */
+  .ykey{display:none}
+  .yhead{display:block;margin-bottom:12px}
+  .ystats{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:10px;background:var(--sheet);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .ystats div{flex-direction:column;align-items:flex-start;gap:2px;border:0;border-radius:0;background:none;padding:.75rem .95rem}
+  .ystats div+div{border-left:1px solid var(--line)}
+  .ystats b{font-size:1.7rem;line-height:1}
+
+  /* converter: pick a direction, show one converter */
+  .cv-switch{display:flex;gap:2px;border:1px solid var(--line);border-radius:999px;background:var(--sheet);padding:3px;margin-bottom:12px}
+  .cv-switch button{flex:1;border:0;background:none;padding:.45rem .4rem;border-radius:999px;font-weight:600;color:var(--muted)}
+  .cv-switch button[aria-pressed="true"]{background:var(--ink);color:var(--sheet)}
+  .conv[data-show="b"] .side-a,.conv[data-show="a"] .side-b{display:none}
+}
 </style>
 </head>
 <body>
@@ -254,7 +310,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <h1>Patro <span class="np">पात्रो</span></h1>
+      <h1><a href="./" id="homeLink" aria-label="Patro home: today in month view">Patro <span class="np">पात्रो</span></a></h1>
     </div>
     <nav class="tabs" aria-label="Views">
       <button id="tab-month">Month</button>
@@ -312,7 +368,6 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
       <span><i class="sw public"></i>Public holiday</span>
       <span><i class="sw limited"></i>Some groups or areas</span>
       <span><i class="sw sat"></i>Weekend</span>
-      <span>Click a day to open it</span>
     </div>
     <div class="yeargrid" id="yearGrid"></div>
     <div class="ybottom">
@@ -329,8 +384,12 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
   </section>
 
   <section id="view-convert" hidden>
-    <div class="conv">
-      <div class="panel cbox">
+    <div class="cv-switch" role="group" aria-label="Conversion direction">
+      <button id="cvShowB" aria-pressed="true">BS → AD</button>
+      <button id="cvShowA" aria-pressed="false">AD → BS</button>
+    </div>
+    <div class="conv" id="conv" data-show="b">
+      <div class="panel cbox side-b">
         <h3>BS → AD</h3>
         <p class="ctitle">Nepali date to English date</p>
         <div class="pick">
@@ -340,7 +399,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
         </div>
         <div class="res" id="bRes" aria-live="polite"></div>
       </div>
-      <div class="panel cbox">
+      <div class="panel cbox side-a">
         <h3>AD → BS</h3>
         <p class="ctitle">English date to Nepali date</p>
         <div class="pick">
@@ -353,7 +412,6 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
     </div>
     <div class="conv-foot">
       <button class="btn" id="cvToday">Reset to today</button>
-      <p class="note">Converts any date from 2000 to 2090 BS (14 Apr 1943 to 12 Apr 2034 AD). Month lengths match Hamro Patro and Ashesh Patro.</p>
     </div>
   </section>
 </div>
@@ -1017,6 +1075,7 @@ const isOff = k => { const [y,m,d]=k.split("-").map(Number); const w=new Date(y,
 // ---------- view switching ----------
 function setView(v){
   state.view = v;
+  document.body.dataset.view = v;
   ["month","year","convert"].forEach(n=>{ $("view-"+n).hidden = n!==v; $("tab-"+n).setAttribute("aria-current", n===v); });
   $("yearCtl").hidden = v==="convert";
   try{ history.replaceState(null,"", v==="month" ? location.pathname : "#"+v); }catch(e){}
@@ -1031,8 +1090,8 @@ function render(){
   $("yNext").disabled = y===Y1;
   if(state.view==="month") renderMonth();
   if(state.view==="year") renderYear();
-  if(window.Tasks) Tasks.afterRender();
   renderDetail();
+  if(window.Tasks) Tasks.afterRender();
 }
 
 // ---------- month view ----------
@@ -1049,9 +1108,9 @@ function renderMonth(){
   const days = new Date(y,m+1,0).getDate();
   const b1 = toBS(y,m,1), b2 = toBS(y,m,days);
   $("mTitle").innerHTML = `${MONTHS[m]}<span>${y}</span>`;
-  $("mBs").textContent = b1.y===b2.y
-    ? `${BS_MONTHS_NP[b1.m]} – ${BS_MONTHS_NP[b2.m]} ${np(b1.y)} · ${BS_MONTHS[b1.m]} – ${BS_MONTHS[b2.m]} ${b1.y} BS`
-    : `${BS_MONTHS_NP[b1.m]} ${np(b1.y)} – ${BS_MONTHS_NP[b2.m]} ${np(b2.y)} · ${BS_MONTHS[b1.m]} ${b1.y} – ${BS_MONTHS[b2.m]} ${b2.y} BS`;
+  $("mBs").innerHTML = b1.y===b2.y
+    ? `<span class="bs-np">${BS_MONTHS_NP[b1.m]} – ${BS_MONTHS_NP[b2.m]} ${np(b1.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} – ${BS_MONTHS[b2.m]} ${b1.y} BS</span>`
+    : `<span class="bs-np">${BS_MONTHS_NP[b1.m]} ${np(b1.y)} – ${BS_MONTHS_NP[b2.m]} ${np(b2.y)}</span><span class="bs-sep"> · </span><span class="bs-en">${BS_MONTHS[b1.m]} ${b1.y} – ${BS_MONTHS[b2.m]} ${b2.y} BS</span>`;
 
   const first = new Date(y,m,1).getDay();
   let html = "";
@@ -1141,8 +1200,7 @@ function renderYear(){
   const breaks = longBreaks(y);
   $("yStats").innerHTML = `
     <div><b>${pubWeekday}</b><span>public holidays on weekdays</span></div>
-    <div><b>${breaks.length}</b><span>breaks of 3+ days off</span></div>
-    <div><b>${yearKeys.filter(k=>byDate[k].some(h=>h.est)).length ? "Some" : "All"}</b><span>${yearKeys.some(k=>byDate[k].some(h=>h.est)) ? "dates estimated" : "dates from government lists"}</span></div>`;
+    <div><b>${breaks.length}</b><span>breaks of 3+ days off</span></div>`;
 
   let html = "";
   for(let m=0;m<12;m++){
@@ -1152,7 +1210,7 @@ function renderYear(){
     for(let i=0;i<first;i++) cells += `<span></span>`;
     for(let d=1; d<=days; d++){
       const k=key(y,m,d), hs=byDate[k]||[], w=(first+d-1)%7, bs=toBS(y,m,d);
-      const cls=["md"]; if(w===0||w===6) cls.push("we"); if(hs.length) cls.push(hs[0].t); if(k===TODAY) cls.push("today");
+      const cls=["md"]; if(w===0||w===6) cls.push("we"); if(hs.length) cls.push(hs[0].t); if(k===TODAY) cls.push("today"); if(k===state.sel) cls.push("sel");
       const tip = `${MON[m]} ${d} · ${BS_MONTHS[bs.m]} ${bs.d}${hs.length?" · "+hs.map(h=>h.n).join(", "):""}`;
       cells += `<button class="${cls.join(" ")}" data-k="${k}" title="${tip}" aria-label="${tip}">${d}<small>${np(bs.d)}</small></button>`;
     }
@@ -1190,27 +1248,45 @@ function resultHTML(adDate, bs){
   const y=adDate.getUTCFullYear(), m=adDate.getUTCMonth(), d=adDate.getUTCDate(), w=adDate.getUTCDay();
   const k=key(y,m,d), hs=byDate[k]||[];
   const inCal = y>=Y0 && y<=Y1;
-  return `<div class="res-row"><span class="res-lab">AD</span><div><div class="res-big">${WEEKDAY_EN[w]},${d} ${MONTHS[m]} ${y}</div></div></div>
-    <div class="res-row"><span class="res-lab">BS</span><div><div class="res-big np">${np(bs.y)} ${BS_MONTHS_NP[bs.m]} ${np(bs.d)}, ${WEEKDAY_NP[w]}</div><div class="res-sub">${BS_MONTHS[bs.m]} ${bs.d}, ${bs.y} BS</div></div></div>
+  return `<div class="res-row"><span class="res-lab">AD</span><div><div class="res-big">${WEEKDAY_EN[w]}, ${d} ${MONTHS[m]} ${y}</div></div></div>
+    <div class="res-row"><span class="res-lab">BS</span><div>${isPhone()
+      ? `<div class="res-big np">${BS_MONTHS[bs.m]} ${bs.d}, ${bs.y} BS</div>`
+      : `<div class="res-big np">${np(bs.y)} ${BS_MONTHS_NP[bs.m]} ${np(bs.d)}, ${WEEKDAY_NP[w]}</div><div class="res-sub">${BS_MONTHS[bs.m]} ${bs.d}, ${bs.y} BS</div>`}</div></div>
     <div class="res-meta"><span>${relDays(adDate)}</span>${hs.length?`<span class="tag ${hs[0].t}">${hs.map(h=>h.n).join(" · ")}</span>`:""}
     ${inCal?`<button class="btn sm" data-k="${k}">Open in calendar</button>`:""}</div>`;
 }
 
 const cv = { bY:$("bY"), bM:$("bM"), bD:$("bD"), aY:$("aY"), aM:$("aM"), aD:$("aD") };
-function initConverter(){
-  const t = toBS(now.getFullYear(), now.getMonth(), now.getDate()) || {y:2083,m:0,d:1};
-  fillSel(cv.bY, Array.from({length:BS_END-BS_START+1},(_,i)=>[BS_START+i, `${BS_START+i} · ${np(BS_START+i)}`]), t.y);
-  fillSel(cv.bM, BS_MONTHS.map((n,i)=>[i, `${n} · ${BS_MONTHS_NP[i]}`]), t.m);
-  fillSel(cv.aY, Array.from({length:AD_Y1-AD_Y0+1},(_,i)=>[AD_Y0+i, AD_Y0+i]), now.getFullYear());
-  fillSel(cv.aM, MONTHS.map((n,i)=>[i,n]), now.getMonth());
-  syncDays("b", t.d); syncDays("a", now.getDate());
+const mqPhone = matchMedia("(max-width:620px)");
+const isPhone = () => mqPhone.matches;
+// converter labels are English-only on phones
+function fillConverter(b, a){
+  const ph = isPhone();
+  fillSel(cv.bY, Array.from({length:BS_END-BS_START+1},(_,i)=>[BS_START+i, ph ? BS_START+i : `${BS_START+i} · ${np(BS_START+i)}`]), b.y);
+  fillSel(cv.bM, BS_MONTHS.map((n,i)=>[i, ph ? n : `${n} · ${BS_MONTHS_NP[i]}`]), b.m);
+  fillSel(cv.aY, Array.from({length:AD_Y1-AD_Y0+1},(_,i)=>[AD_Y0+i, AD_Y0+i]), a.y);
+  fillSel(cv.aM, MONTHS.map((n,i)=>[i,n]), a.m);
+  syncDays("b", b.d); syncDays("a", a.d);
   convB(); convA();
 }
+function initConverter(){
+  const t = toBS(now.getFullYear(), now.getMonth(), now.getDate()) || {y:2083,m:0,d:1};
+  fillConverter(t, {y:now.getFullYear(), m:now.getMonth(), d:now.getDate()});
+}
+function relabelConverter(){
+  fillConverter({y:+cv.bY.value, m:+cv.bM.value, d:+cv.bD.value}, {y:+cv.aY.value, m:+cv.aM.value, d:+cv.aD.value});
+}
+function showConv(side){
+  $("conv").dataset.show = side;
+  $("cvShowB").setAttribute("aria-pressed", side==="b"); $("cvShowA").setAttribute("aria-pressed", side==="a");
+}
+$("cvShowB").onclick = ()=>showConv("b");
+$("cvShowA").onclick = ()=>showConv("a");
 function syncDays(side, want){
   const sel = side==="b"?cv.bD:cv.aD;
   const cur = want ?? +sel.value;
   const len = side==="b" ? bsMonthLen(+cv.bY.value, +cv.bM.value) : new Date(+cv.aY.value, +cv.aM.value+1, 0).getDate();
-  fillSel(sel, Array.from({length:len},(_,i)=>[i+1, side==="b"?`${i+1} · ${np(i+1)}`:i+1]), Math.min(cur,len));
+  fillSel(sel, Array.from({length:len},(_,i)=>[i+1, side==="b"&&!isPhone()?`${i+1} · ${np(i+1)}`:i+1]), Math.min(cur,len));
 }
 function convB(){
   const ad = toAD(+cv.bY.value, +cv.bM.value, +cv.bD.value);
@@ -1228,7 +1304,31 @@ cv.aD.addEventListener("change",convA);
 $("cvToday").onclick = initConverter;
 $("view-convert").addEventListener("click",e=>{const b=e.target.closest("button[data-k]"); if(b) go(b.dataset.k);});
 
-function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); if(window.Tasks) Tasks.open(k); }
+function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); }
+
+// a second tap on the same day within 450 ms counts as a double tap (mouse and touch alike)
+let lastTap = {k:null, t:0};
+function isDoubleTap(k){
+  const t = Date.now(), dbl = lastTap.k===k && t-lastTap.t < 450;
+  lastTap = dbl ? {k:null, t:0} : {k, t};
+  return dbl;
+}
+function openTasks(k){ if(window.Tasks) Tasks.open(k); }
+
+// phone layout: year picker beside the title, view tabs below the sticky header
+const header = document.querySelector(".top"), tabsEl = document.querySelector(".tabs");
+function placeHeader(){
+  if(isPhone()){ document.querySelector(".brand").append($("yearCtl")); header.after(tabsEl); }
+  else { document.querySelector(".controls").prepend($("yearCtl")); document.querySelector(".brand").after(tabsEl); }
+}
+placeHeader();
+mqPhone.addEventListener("change", ()=>{ placeHeader(); relabelConverter(); });
+$("homeLink").onclick = e=>{
+  e.preventDefault();
+  if(window.Tasks) Tasks.close();
+  go(inRange ? TODAY : Y0+"-01-01");
+  window.scrollTo({top:0, behavior:"smooth"});
+};
 
 // ---------- events ----------
 ["month","year","convert"].forEach(v=>$("tab-"+v).onclick=()=>setView(v));
@@ -1240,10 +1340,20 @@ $("yNext").onclick=()=>{ if(state.y<Y1){state.y++; render();} };
 $("prev").onclick=()=>{ if(state.m===0){state.y--;state.m=11}else state.m--; render(); };
 $("nextM").onclick=()=>{ if(state.m===11){state.y++;state.m=0}else state.m++; render(); };
 $("todayBtn").onclick=()=>{ if(state.view==="year"){ state.y = inRange?now.getFullYear():Y0; render(); } else go(inRange ? TODAY : Y0+"-01-01"); };
-$("grid").addEventListener("click",e=>{const c=e.target.closest(".cell[data-k]"); if(c){state.sel=c.dataset.k; render(); if(window.Tasks) Tasks.open(c.dataset.k);}});
-$("list").addEventListener("click",e=>{const li=e.target.closest("li[data-k]"); if(li){state.sel=li.dataset.k; render(); if(window.Tasks) Tasks.open(li.dataset.k);}});
+// single tap selects a day; double tap opens its tasks
+$("grid").addEventListener("click",e=>{const c=e.target.closest(".cell[data-k]"); if(!c) return; const k=c.dataset.k, dbl=isDoubleTap(k); state.sel=k; render(); if(dbl) openTasks(k);});
+$("list").addEventListener("click",e=>{const li=e.target.closest("li[data-k]"); if(!li) return; const k=li.dataset.k, dbl=isDoubleTap(k); state.sel=k; render(); if(dbl) openTasks(k);});
 $("view-year").addEventListener("click",e=>{
   const h=e.target.closest(".mini-h"); if(h){ state.m=+h.dataset.m; state.sel=key(state.y,state.m,1); setView("month"); return; }
+  const d=e.target.closest(".md[data-k]");
+  if(d){
+    const k=d.dataset.k;
+    if(isDoubleTap(k)){ go(k); openTasks(k); return; }
+    state.sel=k;
+    document.querySelectorAll(".md.sel").forEach(x=>x.classList.remove("sel")); d.classList.add("sel");
+    renderDetail(); if(window.Tasks) Tasks.afterRender();
+    return;
+  }
   const t=e.target.closest("[data-k]"); if(t) go(t.dataset.k);
 });
 document.addEventListener("keydown",e=>{

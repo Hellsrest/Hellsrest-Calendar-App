@@ -30,6 +30,20 @@
     clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, 3200);
   }
 
+  // ---------- back button ----------
+  // Each open layer (day panel, dialog) adds a history entry. Back pops the top layer.
+  // Closing a layer from inside the page removes its entry, ignoring the popstate that causes.
+  const layers = []; let skipPops = 0;
+  function pushLayer(close){ const L = { close }; layers.push(L); history.pushState({ patroLayer: layers.length }, ""); return L; }
+  function dropLayer(L){ const i = layers.lastIndexOf(L); if (i < 0) return; layers.splice(i, 1); skipPops++; history.back(); }
+  addEventListener("popstate", () => { if (skipPops) { skipPops--; return; } const L = layers.pop(); if (L) L.close(); });
+  function showDlg(dlg){
+    let viaBack = false;
+    const L = pushLayer(() => { viaBack = true; dlg.close(); });
+    dlg.addEventListener("close", () => { if (!viaBack) dropLayer(L); }, { once: true });
+    dlg.showModal();
+  }
+
   // ---------- data ----------
   function index(){
     byDay = {};
@@ -103,7 +117,9 @@
   }
 
   // ---------- day panel ----------
+  let dayLayer = null;
   function showDay(k){
+    if (!dayLayer) dayLayer = pushLayer(() => { dayLayer = null; hideDay(); });
     openDay = k;
     $("holPanel").hidden = true;
     const p = $("dayPanel"); p.hidden = false; p.classList.add("open");
@@ -111,6 +127,11 @@
     renderDay(true);
   }
   function closeDay(){
+    if (dayLayer) { const L = dayLayer; dayLayer = null; dropLayer(L); }
+    hideDay();
+  }
+  function hideDay(){
+    if (!openDay) return;
     openDay = null;
     $("dayPanel").hidden = true; $("dayPanel").classList.remove("open");
     $("holPanel").hidden = false;
@@ -267,7 +288,7 @@
         $("tSave").disabled = false; $("tSave").textContent = isNew ? "Add task" : "Save";
       }
     };
-    dlg.showModal();
+    showDlg(dlg);
     if (isNew) $("tTitle").focus();
   }
 
@@ -322,21 +343,33 @@
       };
       draw();
     }
-    dlg.showModal();
+    showDlg(dlg);
   }
 
   function drawAcctBtn(){
     const b = $("acctBtn");
-    b.innerHTML = user ? `<span class="acct"><span class="av">${esc(user.email[0])}</span>Account</span>` : "Sign in";
+    b.innerHTML = user ? `<span class="acct"><span class="av">${esc(user.email[0])}</span><span class="acct-l">Account</span></span>` : "Sign in";
     b.setAttribute("aria-label", user ? `Account: ${user.email}` : "Sign in");
   }
 
+  // ---------- day card button ----------
+  function decorateDetail(){
+    const col = document.querySelector("#detail > div"); if (!col || state.view !== "month") return;
+    const k = state.sel, n = (byDay[k] || []).filter(t => !t.done).length;
+    const row = document.createElement("div"); row.className = "dh-tasks";
+    const touch = matchMedia("(pointer:coarse)").matches;
+    row.innerHTML = `<button class="btn" type="button">${user ? (n ? `Tasks · ${n}` : "Tasks") : "Tasks"}</button><span class="hint">or ${touch ? "double-tap" : "double-click"} a date</span>`;
+    row.querySelector("button").onclick = () => showDay(k);
+    col.append(row);
+  }
+
   // ---------- glue ----------
-  function refresh(){ decorateMonth(); renderDay(false); }
+  function refresh(){ decorateMonth(); document.querySelector(".dh-tasks")?.remove(); decorateDetail(); renderDay(false); }
 
   window.Tasks = {
     open: showDay,
-    afterRender(){ decorateMonth(); if (openDay && openDay !== state.sel && state.view === "month") { openDay = state.sel; renderDay(true); } }
+    close: closeDay,
+    afterRender(){ decorateMonth(); decorateDetail(); if (openDay && openDay !== state.sel && state.view === "month") { openDay = state.sel; renderDay(true); } }
   };
 
   $("acctBtn").onclick = openAuthDlg;
