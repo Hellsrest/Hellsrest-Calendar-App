@@ -252,9 +252,6 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .brand h1 a{color:inherit;text-decoration:none}
 .cell,.md{touch-action:manipulation}
 .md.sel{box-shadow:inset 0 0 0 2px var(--ink)}
-.dh-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:10px}
-.dh-tasks .btn{padding:.3rem .9rem;font-weight:600}
-.dh-tasks .hint{font-size:.78rem;color:var(--muted)}
 .cv-switch{display:none}
 
 /* ---------- phone layout ---------- */
@@ -1153,17 +1150,14 @@ function renderDetail(){
   const b = toBS(y,m,d), hs = byDate[k]||[];
   const wd = new Date(y,m,d);
   const wdName = wd.toLocaleDateString("en-GB",{weekday:"long"});
-  $("detail").innerHTML = `<div>
-      <h3>${k===TODAY?"Today":"Selected day"}</h3>
+  const tags = hs.filter(h=>h.t!=="obs").map(h=>`<span class="htag ${h.t}" title="${h.np}">${h.n.split(" · ")[0]}${h.est?" (est.)":""}</span>`).join("");
+  $("detail").innerHTML = `<div class="dh-date">
+      <div class="dh-label"><h3>${k===TODAY?"Today":"Selected day"}</h3>${tags}</div>
       <div class="big">${wdName}, ${MON[m]} ${d}, ${y}</div>
       <div class="bsfull">${bsLabel(b)} · ${WEEKDAY_NP[wd.getDay()]}</div>
       <div class="bsrom">${BS_MONTHS[b.m]} ${b.d}, ${b.y} BS</div>
     </div>
-    <div>
-      <h3>${hs.length?"On this day":"Day type"}</h3>
-      ${hs.length?`<ul class="list">${hs.map(h=>`<li style="cursor:default;grid-template-columns:1fr"><div><div class="nm">${h.n}</div><div class="sub">${h.np}</div><div style="margin-top:3px"><span class="tag ${h.t}">${tagName(h.t)}</span>${h.note?`<span class="sub">${h.note}</span>`:""}${h.est?` <span class="tag est" title="Expected date; no government list yet">est.</span>`:""}</div></div></li>`).join("")}</ul>`
-        : `<p class="empty">${wd.getDay()===6?"Saturday, weekly holiday.":wd.getDay()===0?"Sunday, weekly holiday.":"Regular working day."}</p>`}
-    </div>
+    <div class="dh-tasks" id="dhTasks" aria-live="polite"></div>
     ${nextHolidayHTML(k)}`;
   const nx = $("detail").querySelector(".nexth");
   if(nx){ nx.onclick = ()=>go(nx.dataset.k); nx.onkeydown = e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); go(nx.dataset.k); } }; }
