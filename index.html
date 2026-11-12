@@ -69,7 +69,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .chips button[aria-current="true"]{background:var(--sheet);border-color:var(--ink);color:var(--ink)}
 
 /* main */
-.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:stretch}
 .sheet{background:var(--sheet);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;min-width:0}
 .sheet-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}
 .sheet-head .t{min-width:0}
@@ -112,7 +112,9 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 .dots i.major{background:var(--gold)} .dots i.limited{background:var(--navy)} .dots i.obs{background:var(--muted)}
 
 /* side ledger */
-.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.side{display:flex;flex-direction:column;gap:14px;min-width:0;height:0;min-height:100%} /* height follows the calendar sheet */
+.hpanel{flex:1;min-height:0;display:flex;flex-direction:column}
+.hpanel .list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--line) transparent;margin-right:-10px;padding-right:10px}
 .panel{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 .panel h3{margin:0 0 8px;font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
 .dayhead .big{font-family:var(--display);font-size:1.6rem;line-height:1.1}
@@ -146,6 +148,8 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
 
 @media (max-width:900px){
   .main{grid-template-columns:minmax(0,1fr)}
+  .side{height:auto;min-height:0}
+  .hpanel .list{max-height:420px}
   .chips{grid-template-columns:repeat(6,1fr)}
 }
 @media (max-width:620px){
@@ -284,7 +288,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
       </section>
 
       <aside class="side">
-        <div class="panel">
+        <div class="panel hpanel">
           <h3 id="listTitle">Holidays this month</h3>
           <ul class="list" id="list"></ul>
         </div>
