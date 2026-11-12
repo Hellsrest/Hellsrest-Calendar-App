@@ -6,10 +6,15 @@
 <meta name="description" content="English calendar for 2020-2030 with Nepali BS dates, holidays and a date converter">
 <title>Patro 2020–2030</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#12141b">
+<link rel="stylesheet" href="tasks.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rozha+One&family=Mukta:wght@400;500;600;700&display=swap">
 <style>
+[hidden]{display:none!important}
 /* Layout: wall-calendar sheet — header strip, month chips, 7-col grid beside a holiday ledger; stacks on phones */
 :root{
   --paper:#f6f6f3; --sheet:#ffffff; --ink:#1b1f2b; --muted:#6a6e7a; --line:#e3e2dc;
@@ -263,6 +268,7 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
         <button id="yNext" aria-label="Next year">›</button>
       </div>
       <button class="btn" id="todayBtn">Today</button>
+      <button class="btn" id="acctBtn">Sign in</button>
     </div>
   </header>
 
@@ -288,7 +294,8 @@ button:focus-visible,.cell:focus-visible{outline:2px solid var(--navy);outline-o
       </section>
 
       <aside class="side">
-        <div class="panel hpanel">
+        <div class="panel hpanel daypanel" id="dayPanel" hidden></div>
+        <div class="panel hpanel" id="holPanel">
           <h3 id="listTitle">Holidays this month</h3>
           <ul class="list" id="list"></ul>
         </div>
@@ -1024,6 +1031,7 @@ function render(){
   $("yNext").disabled = y===Y1;
   if(state.view==="month") renderMonth();
   if(state.view==="year") renderYear();
+  if(window.Tasks) Tasks.afterRender();
   renderDetail();
 }
 
@@ -1220,7 +1228,7 @@ cv.aD.addEventListener("change",convA);
 $("cvToday").onclick = initConverter;
 $("view-convert").addEventListener("click",e=>{const b=e.target.closest("button[data-k]"); if(b) go(b.dataset.k);});
 
-function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); }
+function go(k){ const [y,m]=k.split("-").map(Number); state.y=y; state.m=m-1; state.sel=k; setView("month"); if(window.Tasks) Tasks.open(k); }
 
 // ---------- events ----------
 ["month","year","convert"].forEach(v=>$("tab-"+v).onclick=()=>setView(v));
@@ -1232,8 +1240,8 @@ $("yNext").onclick=()=>{ if(state.y<Y1){state.y++; render();} };
 $("prev").onclick=()=>{ if(state.m===0){state.y--;state.m=11}else state.m--; render(); };
 $("nextM").onclick=()=>{ if(state.m===11){state.y++;state.m=0}else state.m++; render(); };
 $("todayBtn").onclick=()=>{ if(state.view==="year"){ state.y = inRange?now.getFullYear():Y0; render(); } else go(inRange ? TODAY : Y0+"-01-01"); };
-$("grid").addEventListener("click",e=>{const c=e.target.closest(".cell[data-k]"); if(c){state.sel=c.dataset.k; render();}});
-$("list").addEventListener("click",e=>{const li=e.target.closest("li[data-k]"); if(li){state.sel=li.dataset.k; render();}});
+$("grid").addEventListener("click",e=>{const c=e.target.closest(".cell[data-k]"); if(c){state.sel=c.dataset.k; render(); if(window.Tasks) Tasks.open(c.dataset.k);}});
+$("list").addEventListener("click",e=>{const li=e.target.closest("li[data-k]"); if(li){state.sel=li.dataset.k; render(); if(window.Tasks) Tasks.open(li.dataset.k);}});
 $("view-year").addEventListener("click",e=>{
   const h=e.target.closest(".mini-h"); if(h){ state.m=+h.dataset.m; state.sel=key(state.y,state.m,1); setView("month"); return; }
   const t=e.target.closest("[data-k]"); if(t) go(t.dataset.k);
@@ -1253,5 +1261,9 @@ initConverter();
 const startView = ({"#year":"year","#convert":"convert"})[location.hash] || "month";
 setView(startView);
 </script>
+<dialog class="sheetdlg" id="taskDlg" aria-label="Task"></dialog>
+<dialog class="sheetdlg" id="authDlg" aria-label="Account"></dialog>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="tasks.js"></script>
 </body>
 </html>

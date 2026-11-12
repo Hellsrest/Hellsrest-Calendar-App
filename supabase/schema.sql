@@ -1,0 +1,64 @@
+-- Patro: database setup.
+-- Run once in Supabase → SQL Editor → New query → paste → Run.
+-- Safe to re-run: every statement checks whether the object already exists.
+
+-- ---------- tasks ----------
+create table if not exists public.tasks (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  date          date not null,                -- AD date the task belongs to
+  start_time    time,                         -- null = no set time (all-day task)
+  end_time      time,
+  title         text not null check (char_length(title) between 1 and 200),
+  description   text,
+  done          boolean not null default false,
+  remind        boolean not null default true,
+  remind_before integer not null default 15 check (remind_before between 0 and 10080), -- minutes
+  remind_at     timestamptz,                  -- when the reminder fires; set by the app
+  notified_at   timestamptz,                  -- when the reminder was sent (phase 3)
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists tasks_user_date_idx on public.tasks (user_id, date);
+create index if not exists tasks_due_reminders_idx on public.tasks (remind_at)
+  where remind and notified_at is null and not done;
+
+-- ---------- per-user settings ----------
+create table if not exists public.user_settings (
+  user_id               uuid primary key default auth.uid() references auth.users(id) on delete cascade,
+  default_remind_before integer not null default 15 check (default_remind_before between 0 and 10080),
+  updated_at            timestamptz not null default now()
+);
+
+-- ---------- keep updated_at current ----------
+create or replace function public.touch_updated_at() returns trigger
+language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end $$;
+
+drop trigger if exists tasks_touch on public.tasks;
+create trigger tasks_touch before update on public.tasks
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists user_settings_touch on public.user_settings;
+create trigger user_settings_touch before update on public.user_settings
+  for each row execute function public.touch_updated_at();
+
+-- ---------- row level security: each user sees only their own rows ----------
+alter table public.tasks enable row level security;
+alter table public.user_settings enable row level security;
+
+drop policy if exists "own tasks" on public.tasks;
+create policy "own tasks" on public.tasks
+  for all to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+drop policy if exists "own settings" on public.user_settings;
+create policy "own settings" on public.user_settings
+  for all to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
