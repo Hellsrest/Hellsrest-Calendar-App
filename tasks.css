@@ -167,7 +167,7 @@ dialog.sheetdlg::backdrop{background:rgba(10,12,18,.55)}
 .fab:active{transform:scale(.96)}
 
 /* ---------- add / edit sheet ---------- */
-dialog.sheet{width:min(480px,calc(100vw - 24px))}
+dialog.sheet{width:min(480px,calc(100vw - 24px));overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;box-shadow:0 20px 60px rgba(0,0,0,.35)}
 .sh{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px}
 .sh-grab{display:none;width:40px;height:4px;border-radius:2px;background:var(--line);margin:-4px auto 0}
 .sh-top{display:flex;justify-content:space-between;align-items:center}
@@ -225,3 +225,5 @@ dialog.sheet{width:min(480px,calc(100vw - 24px))}
 .acct-min input{width:4rem;font:inherit;font-weight:700;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:.3rem .5rem;text-align:right}
 .acct-test{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:.6rem;font-size:.9rem;color:var(--muted)}
 .acct-note{margin:.4rem 0 0;font-size:.82rem}
+.ag-row,.tblock,.tchip{touch-action:manipulation;-webkit-user-select:none;user-select:none}
+.ag-tip{margin:18px 0 0;text-align:center;font-size:.78rem;color:var(--muted)}

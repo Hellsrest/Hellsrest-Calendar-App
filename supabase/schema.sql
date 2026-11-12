@@ -85,3 +85,9 @@ alter table public.user_settings add column if not exists snooze_minutes integer
 do $$ begin
   alter table public.user_settings add constraint user_settings_snooze_ok check (snooze_minutes between 1 and 60);
 exception when duplicate_object then null; end $$;
+
+-- ---------- alert at the end time (added later; safe to re-run) ----------
+alter table public.tasks add column if not exists end_alert text not null default 'none';
+do $$ begin
+  alter table public.tasks add constraint tasks_end_alert_ok check (end_alert in ('none','notify','alarm'));
+exception when duplicate_object then null; end $$;

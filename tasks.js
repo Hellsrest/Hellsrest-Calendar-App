@@ -53,7 +53,9 @@
     const at = fmtTime(t.start_time), parts = [];
     if (t.remind && t.remind_before > 0) parts.push(`notification ${remindLabel(t.remind_before)}`);
     parts.push(t.alarm ? `alarm rings at ${at}` : `notification at ${at}`);
-    const s = parts.join(" and ");
+    if (t.end_time && t.end_alert === "notify") parts.push(`notification at ${fmtTime(t.end_time)}`);
+    if (t.end_time && t.end_alert === "alarm") parts.push(`alarm rings at ${fmtTime(t.end_time)}`);
+    const s = parts.length > 2 ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1] : parts.join(" and ");
     return s[0].toUpperCase() + s.slice(1) + ".";
   }
 
@@ -175,6 +177,10 @@
         if (t.remind && t.remind_before > 0) add(start - t.remind_before * 60000, "notify", `In ${relMin(t.remind_before)} · ${span}`, "before");
         if (t.alarm) add(start, "alarm", span, "alarm");
         else add(start, "notify", `Starting now · ${span}`, "start");
+        if (t.end_time && (t.end_alert === "notify" || t.end_alert === "alarm")) {
+          const end = new Date(`${k}T00:00:00`).getTime() + o.e * 60000;   // o.e runs past midnight for overnight tasks
+          add(end, t.end_alert, t.end_alert === "alarm" ? `Ends · ${span}` : `Ending now · ${span}`, "end");
+        }
       }
     }
     out.sort((a,b) => a.at - b.at);
@@ -231,6 +237,7 @@
     const row = { date: t.date, start_time: t.start_time || null, end_time: t.start_time ? (t.end_time || null) : null,
       title: t.title, description: t.description || null, done: rep === "none" && !!t.done, remind: !!t.remind,
       alarm: !!t.alarm && !!t.start_time,
+      end_alert: t.start_time && t.end_time && (t.end_alert === "notify" || t.end_alert === "alarm") ? t.end_alert : "none",
       remind_before: t.remind_before ?? settings.default_remind_before,
       repeat: rep, repeat_every: rep === "none" ? 1 : (t.repeat_every || 1),
       repeat_until: rep === "none" ? null : (t.repeat_until || null),
@@ -315,7 +322,7 @@
       const cls = ["up-card", o.done ? "done" : "", past && !o.done ? "past" : "", now && !o.done ? "now" : "", i === fi ? "focus" : ""].filter(Boolean).join(" ");
       const time = o.cont ? `Until ${fmtTime(t.end_time)}` : o.s != null ? fmtTime(t.start_time) : "Any time";
       const meta = o.done ? "Done"
-        : `${t.remind && !o.cont ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}${t.alarm && !o.cont ? clock : ""}${isRep(t) ? loop : ""}`;
+        : `${t.remind && !o.cont ? `${bell}${t.start_time ? remindLabel(t.remind_before).replace(" before","") : "9 am"}` : ""}${(t.alarm || t.end_alert === "alarm") && !o.cont ? clock : ""}${isRep(t) ? loop : ""}`;
       return `<button class="${cls}" data-id="${t.id}" data-k="${o.k}" type="button">
         <span class="up-time">${time}${now && !o.done ? `<em>Now</em>` : ""}</span>
         <span class="up-title">${esc(t.title)}</span>
@@ -422,12 +429,13 @@
           ${check(o)}
           <span class="ag-time">${time}</span>
           <span class="ag-main"><b>${esc(t.title)}</b>${sub ? `<small>${isRep(t) ? loop : ""}${sub}</small>` : ""}</span>
-          ${(t.remind || t.alarm) && !o.done && !o.cont ? `<span class="ag-bell" title="${esc(alertSummary(t))}">${t.alarm ? clock : bell}</span>` : ""}
+          ${(t.remind || t.alarm || t.end_alert === "alarm") && !o.done && !o.cont ? `<span class="ag-bell" title="${esc(alertSummary(t))}">${t.alarm || t.end_alert === "alarm" ? clock : bell}</span>` : ""}
         </div>`;
       }
       html += `</div>`;
     }
     if (!nowShown) html += nowLine;
+    html += `<p class="ag-tip">Tap a task to tick it off · double-tap to edit</p>`;
     return `<div class="ag">${html}</div>`;
   }
 
@@ -485,6 +493,16 @@
     $("dayPanel").querySelector(".wk-day.sel")?.scrollIntoView({ inline: "center", block: "nearest" });
   }
 
+  // in the day view one tap ticks a task off, a double tap opens it for editing
+  let tapTimer = null, tapKey = null;
+  function tapTask(el){
+    const id = el.dataset.id, k = el.dataset.k, tk = id + "|" + k;
+    if (tapTimer && tapKey === tk) { clearTimeout(tapTimer); tapTimer = null; openTaskDlg(findTask(id), k); return; }
+    clearTimeout(tapTimer); tapKey = tk;
+    const wasDone = el.classList.contains("done");
+    tapTimer = setTimeout(() => { tapTimer = null; toggleDone(id, k); toast(wasDone ? "Marked not done" : "Done ✓"); }, 300);
+  }
+
   function wire(){
     $("dpClose").onclick = closeDay;
     const add = () => openTaskDlg({ date: openDay });
@@ -494,7 +512,7 @@
     panel.onclick = e => {
       const day = e.target.closest("[data-day]"); if (day) { gotoDay(day.dataset.day); return; }
       const chk = e.target.closest("[data-done]"); if (chk) { e.stopPropagation(); toggleDone(chk.dataset.done, chk.dataset.k); return; }
-      const row = e.target.closest("[data-id]"); if (row) { openTaskDlg(findTask(row.dataset.id), row.dataset.k); return; }
+      const row = e.target.closest("[data-id]"); if (row) { tapTask(row); return; }
       const slot = e.target.closest(".tl-hour > div");
       if (slot && user) {
         const h = +slot.parentElement.dataset.h, r = slot.getBoundingClientRect();
@@ -546,6 +564,8 @@
         </div>
         <label class="sh-row" id="tCustomWrap" hidden><span>Minutes before</span><input type="number" id="tCustom" min="0" max="10080" step="1" value="${rb}"></label>
         <div class="sh-row" id="tAlarmRow"><label class="toggle"><input type="checkbox" id="tAlarm" ${t.alarm ? "checked" : ""}><span>${clock}Alarm at start</span></label></div>
+        <label class="sh-row" id="tEndRow"><span>${clock}At end</span><select id="tEndAlert" aria-label="At the end time">
+          <option value="none">Nothing</option><option value="notify">Notification</option><option value="alarm">Alarm</option></select></label>
         <p class="sh-hint" id="tAlertHint"></p>
         <button type="button" class="linkbtn sh-notebtn" id="tNoteBtn" ${t.description ? "hidden" : ""}>+ Add note</button>
         <label class="sh-note" id="tNoteWrap" ${t.description ? "" : "hidden"}><span>Note</span><textarea id="tDesc" rows="3">${esc(t.description)}</textarea></label>
@@ -560,6 +580,7 @@
     </form>`;
     $("tBefore").value = preset ? String(rb) : "custom";
     $("tRepeat").value = repVal;
+    $("tEndAlert").value = t.end_alert || "none";
     $("tUnit").value = rep ? t.repeat : "daily";
     $("tEnds").value = t.repeat_count ? "count" : t.repeat_until ? "date" : "never";
 
@@ -576,8 +597,9 @@
       $("tBefore").hidden = !on || !timed;
       $("tCustomWrap").hidden = !on || !timed || $("tBefore").value !== "custom";
       $("tAlarmRow").hidden = !timed;
+      $("tEndRow").hidden = !timed || !$("tEnd").value;
       const before = $("tBefore").value === "custom" ? Math.round(+$("tCustom").value) : +$("tBefore").value;
-      $("tAlertHint").textContent = alertSummary({ start_time: $("tStart").value, remind: on, remind_before: before, alarm: $("tAlarm").checked })
+      $("tAlertHint").textContent = alertSummary({ start_time: $("tStart").value, end_time: $("tEnd").value, remind: on, remind_before: before, alarm: $("tAlarm").checked, end_alert: $("tEndAlert").value })
         + (native ? "" : " (on your phone, in the Patro app)");
       const s = toMin($("tStart").value), e = toMin($("tEnd").value), hint = $("tTimeHint");
       if (s == null) { hint.hidden = false; hint.textContent = "Leave Start empty for a task you can do any time that day."; }
@@ -599,7 +621,7 @@
         rh.textContent = repeatLabel(preview, true) + (isNew || !rep ? "" : " Changes apply to every repeat.");
       }
     };
-    ["tRemind","tAlarm","tCustom","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
+    ["tRemind","tAlarm","tEndAlert","tCustom","tStart","tEnd","tBefore","tRepeat","tEvery","tUnit","tEnds","tUntil","tCount","tDate"].forEach(id => $(id).addEventListener("input", sync));
     $("tEnds").addEventListener("change", () => {
       // pick a sensible last day the first time "On date" is chosen
       if ($("tEnds").value === "date" && !$("tUntil").value && $("tDate").value) $("tUntil").value = addDays($("tDate").value, 30);
@@ -669,6 +691,7 @@
         const saved = await saveTask({ id: t.id, title, description: $("tDesc").value.trim(), date,
           start_time: s || null, end_time: en || null, remind: $("tRemind").checked, remind_before: before,
           alarm: !!s && $("tAlarm").checked,
+          end_alert: s && en ? $("tEndAlert").value : "none",
           done: !repeats && doneChecked, ...r, repeat_until, repeat_count, done_dates: done_dates.sort(),
           skip_dates: rep && repeats ? (t.skip_dates || []) : [] });
         dlg.close();
